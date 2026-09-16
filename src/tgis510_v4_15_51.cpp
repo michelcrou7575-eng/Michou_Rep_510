@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.50
+// Ref: TGIS-510_cpp_V4_15.51
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -990,6 +990,31 @@
 // (K) to a touchscreen tap -- consider a password-protected CX-Designer
 // screen for this rather than one reachable during normal operation.
 //
+// FIELD UPDATE (V4.15.51): "since we don't use the Celsius decoder, and
+// the MLX has a max rate of 64/sec, could we get faster scans?" -- two
+// separate facts were being conflated. 64Hz was already tried (see the
+// MLX90640 section's own header comment) and confirmed to fail with
+// error -8, an I2C bandwidth wall at 800kHz (64Hz needs ~196KB/s vs
+// ~100KB/s usable), not a decode-cost problem -- raw-delta already
+// skipped the Celsius calibration (V4.15.3) specifically to keep CPU cost
+// off the critical path, so there was nothing left to "not decode" for a
+// speed gain. The real headroom was elsewhere: MLX_REFRESH_RATE_NOMINAL
+// already configures the sensor itself for a confirmed-stable 32Hz, but
+// MLX_MEASURED_FPS (the constant that paces how often THIS CODE asks for
+// a frame) was still 8.0f -- a conservative guess from early on, per its
+// own comment "a fixed assumption, not a live measurement," never
+// revisited once the raw-delta path made the CPU side cheap. Raised to
+// 32.0f to actually use the sensor's already-proven rate instead of
+// asking for 1 in every 4 frames it can deliver. getRawFrame() blocks
+// until new subpage data is ready, so this can't return duplicate/stale
+// frames -- but polling this close to the sensor's real cadence means
+// that block can now occasionally take real time instead of always
+// returning instantly (previously guaranteed since 125ms >> 31ms).
+// Needs field verification: watch Measured FPS (should climb toward
+// ~32) and, more importantly, that Keyence trigger timing and encoder
+// counting (both explicitly hard-real-time, sharing this same loop())
+// show no new jitter.
+//
 // Industrial QC system detecting hot-melt glue application on tubes moving
 // at high speed. Confirms glue presence, temperature, and quantity across
 // both glue strips per tube pass, and pushes a stable QC-confirmation image
@@ -1151,10 +1176,17 @@ void runI2CScanner() {
 // / HMI telemetry report. 64Hz fails with error -8 here -- an I2C
 // bandwidth wall (64Hz needs ~196KB/s vs ~100KB/s usable at 800kHz), not a
 // timing bug.
+//
+// RAISED (V4.15.51): MLX_MEASURED_FPS was 8.0f -- a conservative guess
+// from before the raw-delta path existed, left unrevisited (see this
+// file's header FIELD UPDATE). Now matches MLX_REFRESH_RATE_NOMINAL
+// itself, so this code actually asks for frames as often as the sensor
+// is already configured to produce them, instead of 1 in 4. Needs field
+// verification -- see the FIELD UPDATE for exactly what to watch.
 // =====================================================================
 static const mlx90640_refreshrate_t MLX_REFRESH_RATE_NOMINAL = MLX90640_32_HZ;
-static const float MLX_MEASURED_FPS = 8.0f;
-static const uint32_t MLX_FRAME_PERIOD_MS = (uint32_t)(1000.0f / MLX_MEASURED_FPS); // 125ms
+static const float MLX_MEASURED_FPS = 32.0f;
+static const uint32_t MLX_FRAME_PERIOD_MS = (uint32_t)(1000.0f / MLX_MEASURED_FPS); // ~31ms
 
 Adafruit_MLX90640 mlx;
 // Holds raw-ADC-delta values (see below) in the live acquisition path, NOT
