@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.51
+// Ref: TGIS-510_cpp_V4_15.52
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -1015,6 +1015,28 @@
 // counting (both explicitly hard-real-time, sharing this same loop())
 // show no new jitter.
 //
+// FIELD UPDATE (V4.15.52): root-caused the ~15.6Hz ceiling from V4.15.51
+// (requested 32Hz, real Measured FPS landed at 15.59-15.60, repeatably).
+// Not a bus-contention or software throttle -- read the vendored driver
+// (lib/Adafruit_MLX90640/utility/MLX90640_API.cpp,
+// MLX90640_GetFrameData()): getRawFrame() calls it TWICE per call, once
+// per subpage, each busy-waiting on the sensor's own "data ready" status
+// bit first. MLX_REFRESH_RATE_NOMINAL (MLX90640_32_HZ) governs how fast
+// EACH SUBPAGE refreshes, not a full two-subpage frame -- and this code's
+// chessboard combine (readMlxRawCombined()) needs a fresh copy of BOTH
+// subpages every call. So the real full-frame ceiling is HALF the
+// configured refresh rate: 32Hz setting -> ~16Hz full frames, matching
+// the measured 15.59-15.60 almost exactly (the small gap is real I2C/
+// status-polling overhead). No further gain available without either (a)
+// raising MLX_REFRESH_RATE_NOMINAL itself -- already tried at 64Hz,
+// already fails with I2C error -8 (see this section's own comment,
+// unchanged) -- or (b) a genuinely different acquisition scheme (e.g.
+// consuming one freshly-ready subpage per loop() iteration instead of
+// blocking for both), which trades staleness/complexity for a rate this
+// scheme structurally cannot reach. 15.6Hz is the real ceiling for a
+// combined dual-subpage frame at the current, confirmed-stable refresh
+// setting -- not a bug, not further tunable from here.
+//
 // Industrial QC system detecting hot-melt glue application on tubes moving
 // at high speed. Confirms glue presence, temperature, and quantity across
 // both glue strips per tube pass, and pushes a stable QC-confirmation image
@@ -1181,8 +1203,18 @@ void runI2CScanner() {
 // from before the raw-delta path existed, left unrevisited (see this
 // file's header FIELD UPDATE). Now matches MLX_REFRESH_RATE_NOMINAL
 // itself, so this code actually asks for frames as often as the sensor
-// is already configured to produce them, instead of 1 in 4. Needs field
-// verification -- see the FIELD UPDATE for exactly what to watch.
+// is already configured to produce them, instead of 1 in 4.
+//
+// CONFIRMED (V4.15.52): field-verified Measured FPS landed at ~15.6, not
+// 32 -- root cause is real, not a bug: 32Hz here is the PER-SUBPAGE
+// refresh rate, and getRawFrame() needs a fresh copy of BOTH subpages
+// every call (see MLX90640_GetFrameData() in the vendored driver), so
+// the achievable full-frame rate is structurally half the configured
+// refresh rate. ~16Hz is the real ceiling for this acquisition scheme at
+// this refresh setting -- see this file's header FIELD UPDATE for the
+// full trace. 32.0f is left as-is: it already means "ask as often as
+// possible," and the resulting ~15.6Hz is correct, not a regression to
+// chase further.
 // =====================================================================
 static const mlx90640_refreshrate_t MLX_REFRESH_RATE_NOMINAL = MLX90640_32_HZ;
 static const float MLX_MEASURED_FPS = 32.0f;
