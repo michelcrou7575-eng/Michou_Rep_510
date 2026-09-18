@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.52
+// Ref: TGIS-510_cpp_V4_15.53
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -1037,6 +1037,20 @@
 // combined dual-subpage frame at the current, confirmed-stable refresh
 // setting -- not a bug, not further tunable from here.
 //
+// FIELD UPDATE (V4.15.53): operator plans to add a $W50 write to every
+// CX-Designer screen (a macro/PT-status object writing that screen's own
+// number), so the host can know which screen is currently showing.
+// Track-only for now, per explicit choice: RM-polled into
+// currentScreenNumber and printed in diagnostics, no firmware behavior
+// depends on it yet. A natural next step once real screen numbers exist
+// (raised, not built, this version): gate the diagnostic screen's 28
+// buttons ($B50-77) on currentScreenNumber actually matching that
+// screen, as a real defense against an accidental tap reaching
+// FaultStop/state overrides from elsewhere -- see V4.15.50's FIELD
+// UPDATE for that same caution. $W50 needs the panel-side write added in
+// CX-Designer before this reports anything real; until then it just
+// reads back whatever $W50 currently holds (likely 0/unset).
+//
 // Industrial QC system detecting hot-melt glue application on tubes moving
 // at high speed. Confirms glue presence, temperature, and quantity across
 // both glue strips per tube pass, and pushes a stable QC-confirmation image
@@ -1930,6 +1944,10 @@ constexpr uint32_t TELEMETRY_WRITE_INTERVAL_MS = 250;
 constexpr uint16_t HOTMELT_START_POSITION_ADDR = 11;
 constexpr uint16_t HOTMELT_END_POSITION_ADDR = 12;
 constexpr uint32_t RM_POLL_INTERVAL_MS = 1000; // operator input changes rarely -- no need to poll fast
+
+// V4.15.53: current-screen-number word, planned but not yet written by
+// the panel -- see this file's header FIELD UPDATE. Track-only for now.
+constexpr uint16_t CURRENT_SCREEN_ADDR = 50;
 
 // Hard protocol ceiling, not a tuning knob: the WM/RM wire format's LL
 // field is exactly 2 decimal digits (*L(2 dec) in the protocol reference),
@@ -3335,11 +3353,19 @@ void handlePresenceEdge() {
   }
 }
 
+// V4.15.53: current HMI screen number, RM-polled from CURRENT_SCREEN_ADDR
+// ($W50) alongside the HotMelt position words below -- see this file's
+// header FIELD UPDATE. Track-only: nothing reads these yet.
+uint16_t currentScreenNumber = 0;
+bool currentScreenNumberValid = false;
+
 // =====================================================================
 // HMI input polling -- rotates a low-rate RM read between the two
 // operator-entered position words (HOTMELT_START_POSITION_ADDR,
-// HOTMELT_END_POSITION_ADDR) and routes any successful result into
-// hotMeltStartPositionMm/hotMeltEndPositionMm. Entirely inert whenever
+// HOTMELT_END_POSITION_ADDR) and the current-screen-number word
+// (CURRENT_SCREEN_ADDR), and routes any successful result into
+// hotMeltStartPositionMm/hotMeltEndPositionMm/currentScreenNumber.
+// Entirely inert whenever
 // NS12_ENABLE_RM_POLLING is 0: no request ever goes out, so the fallback
 // PLACEHOLDER values above stay in effect and hotMeltPositionsFromHmi
 // stays false. V4.15.10: turned ON to field-test RM_WORD_ADDRESS_OFFSET
@@ -3515,10 +3541,12 @@ void serviceHmiInputPolling() {
     }
   } else if (!ns12.isReadPending() && now - lastHmiPollMs >= NS12::RM_POLL_INTERVAL_MS) {
     lastHmiPollMs = now;
-    uint16_t addr = (nextHmiPollIndex == 0) ? NS12::HOTMELT_START_POSITION_ADDR
-                                             : NS12::HOTMELT_END_POSITION_ADDR;
-    ns12.requestRM(addr, 1);
-    nextHmiPollIndex = (nextHmiPollIndex + 1) % 2;
+    // V4.15.53: 3-way rotation, was 2-way -- added CURRENT_SCREEN_ADDR.
+    static const uint16_t kHmiPollAddrs[3] = {
+        NS12::HOTMELT_START_POSITION_ADDR, NS12::HOTMELT_END_POSITION_ADDR,
+        NS12::CURRENT_SCREEN_ADDR};
+    ns12.requestRM(kHmiPollAddrs[nextHmiPollIndex], 1);
+    nextHmiPollIndex = (nextHmiPollIndex + 1) % 3;
   }
 
   uint16_t addr, value;
@@ -3540,6 +3568,9 @@ void serviceHmiInputPolling() {
     } else if (addr == NS12::HOTMELT_END_POSITION_ADDR) {
       hotMeltEndPositionMm = (float)value * HMI_POSITION_MM_PER_COUNT;
       hotMeltPositionsFromHmi = true;
+    } else if (addr == NS12::CURRENT_SCREEN_ADDR) {
+      currentScreenNumber = value;
+      currentScreenNumberValid = true;
     }
   }
 #endif
@@ -3672,6 +3703,14 @@ void printDiagnostics() {
   Serial.printf("HotMelt Start/End position (mm) : %.1f / %.1f (%s)\n",
                 hotMeltStartPositionMm, hotMeltEndPositionMm,
                 hotMeltPositionsFromHmi ? "from HMI" : "PLACEHOLDER fallback, not from HMI yet");
+  // V4.15.53: track-only -- see this file's header FIELD UPDATE. Reads
+  // real once the panel actually writes $W50; until then this is
+  // whatever $W50 happens to hold (likely 0/unset).
+  if (currentScreenNumberValid) {
+    Serial.printf("Current HMI screen : %u\n", (unsigned)currentScreenNumber);
+  } else {
+    Serial.println(F("Current HMI screen : not yet read ($W50)"));
+  }
   if (tubeLengthLearned) {
     Serial.printf("Tube length          : %.1f mm (from previous tube)\n", learnedTubeLengthMm);
   } else {
