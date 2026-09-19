@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.57
+// Ref: TGIS-510_cpp_V4_15.59
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -783,10 +783,22 @@ public:
     size_t sent = Serial2.write(reinterpret_cast<uint8_t *>(frame), n);
 
     if (sent != n) {
-      // Partial write -- the PT never got a complete, valid frame. Left
-      // uncounted before, this made a write silently dropped under TX
-      // backlog indistinguishable from one that landed cleanly.
+      // Partial write -- retry once immediately, picking up right after the
+      // bytes that did make it into the driver's TX buffer. Still
+      // non-blocking: Serial2.write() only falls short when that buffer is
+      // full, and a second call either drains what's left or doesn't.
+      sent += Serial2.write(reinterpret_cast<uint8_t *>(frame + sent), n - sent);
+    }
+
+    if (sent != n) {
+      // Frame never fully went out even after the retry -- the PT's copy of
+      // this address range is now stale/blank and will stay that way until
+      // the next push. Log addr/count so a recurring blank column on the
+      // display can be matched to a specific dropped write instead of just
+      // the aggregate wmFailures count.
       wmFailures++;
+      Serial.printf("[NS12] WM write failed: addr=0x%04X count=%u (%u/%u bytes sent)\n",
+                    startAddr, (unsigned)count, (unsigned)sent, (unsigned)n);
     }
     // Blocking flush() intentionally not used for WM -- a stalled TX flush
     // here would block the whole control loop during InspectingTube.
@@ -1468,6 +1480,16 @@ struct PendingMatrixWrite {
 };
 PendingMatrixWrite pendingMatrix;
 
+// Troubleshooting aid: increments once per fully-completed matrix push
+// (every column plus the band-max write) and gets pushed to the word right
+// after the band-max pair (bandAddr+2 -- 830 at default 16x8, since bandAddr
+// itself is 828 there; computed off bandAddr rather than hardcoded so it
+// stays clear of the matrix's own pixel range in experimental 32x24 mode
+// too). Watch this on the panel: if it keeps incrementing but a column
+// stays blank, the ESP genuinely finished sending and the fault is on the
+// PT side, not a dropped WM write.
+uint16_t matrixPushCounter = 0;
+
 // Runtime-effective mode: starts at the compile-time default but can be
 // latched false by checkDisplayAutoFallback() below if the experimental
 // 32x24 mode is starving RM reads.
@@ -1508,7 +1530,9 @@ void pushWordLampMatrix(const float *compositeFrame) {
   // digits, so no single WM command can legitimately carry more than 99
   // words; splitting into column writes (rows=8 or 24 words each, both
   // well under 99) keeps every write inside that limit. Lands the band-max
-  // words at $828/$829 (MATRIX_BASE_ADDR + cols*rows = 700+128).
+  // words at $828/$829 (MATRIX_BASE_ADDR + cols*rows = 700+128), and the
+  // matrixPushCounter troubleshooting word right after at $830 -- see its
+  // declaration for what it's for.
   memcpy(pendingMatrix.words, words, sizeof(uint16_t) * cols * rows);
   pendingMatrix.cols = cols;
   pendingMatrix.rows = rows;
@@ -1566,6 +1590,8 @@ void serviceMatrixPacing() {
 
   if (pendingMatrix.nextCol >= pendingMatrix.cols) {
     ns12.sendWM(pendingMatrix.bandAddr, pendingMatrix.band01, 2);
+    matrixPushCounter++;
+    ns12.sendWM((uint16_t)(pendingMatrix.bandAddr + 2), &matrixPushCounter, 1);
     pendingMatrix.active = false;
   }
 }
