@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.56
+// Ref: TGIS-510_cpp_V4_15.57
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -1896,9 +1896,10 @@ uint32_t buttonPressCount[NS12::BUTTON_COUNT] = {};
 //   ACKNOWLEDGE, bit 1 (McpPin::INPUT_2) = MACHINE_RUNNING -- independent
 //   flags, true/false in any combination, no encoding. Which physical
 //   input is which is this file's placeholder pairing -- confirm against
-//   the S7 program. Bit 2 (Pins::ESP_INPUT_3) has no meaning assigned yet
-//   (PLACEHOLDER) -- it used to carry Keyence Result, which now wires
-//   directly to a PLC input instead of through the ESP32.
+//   the S7 program. Bit 2 (Pins::ESP_INPUT_3) is read and tracked
+//   (plcControlBit2 below) but nothing acts on its value yet -- it used
+//   to carry Keyence Result, which now wires directly to a PLC input
+//   instead of through the ESP32.
 //   Bits 0-1 are read only during Standby/TubeGap, same ~20ms-cadence
 //   restriction as the rest of this file's MCP polling (an I2C
 //   transaction every loop() iteration would cost InspectingTube latency
@@ -1923,7 +1924,7 @@ void setStatus(PlcStatus s) {
 
 bool plcAcknowledge = false;
 bool plcMachineRunning = false;
-bool plcControlBit2 = false; // PLACEHOLDER: FROM_PLC_COMM bit 2, meaning not yet assigned
+bool plcControlBit2 = false; // FROM_PLC_COMM bit 2 -- tracked/logged only, no behavior wired to it yet
 PlcComms::PlcStatus plcLastCommandedStatus = PlcComms::PlcStatus::STOP;
 
 void serviceHmiInputPolling() {
@@ -2249,26 +2250,34 @@ void serviceHmiButtonPolling() {
 // extra independent I2C poll interval would just double the I2C traffic
 // for no benefit.
 // =====================================================================
+// Debounced against relay chatter/line noise and the PLC's own outputs not
+// switching atomically: a bit is only accepted once it reads the same on
+// two consecutive ~20ms polls, so a one-poll glitch never reaches
+// plcAcknowledge/plcMachineRunning/plcControlBit2 or their log lines.
 void servicePlcControl() {
   if (!mcpOk || !(state == SystemState::Standby || state == SystemState::TubeGap)) return;
+  static bool ackPrevRaw = false, runningPrevRaw = false, bit2PrevRaw = false;
   bool ack = (mcp.digitalRead(McpPin::INPUT_1) == LOW); // INPUT_PULLUP: idle HIGH
   bool running = (mcp.digitalRead(McpPin::INPUT_2) == LOW);
-  bool bit2 = (digitalRead(Pins::ESP_INPUT_3) == HIGH); // FROM_PLC_COMM bit 2, PLACEHOLDER
+  bool bit2 = (digitalRead(Pins::ESP_INPUT_3) == HIGH); // FROM_PLC_COMM bit 2, no action wired yet
 
-  if (ack != plcAcknowledge) {
+  if (ack == ackPrevRaw && ack != plcAcknowledge) {
     plcAcknowledge = ack;
     Serial.printf("[PLC] ACKNOWLEDGE -> %s\n", ack ? "ACTIVE" : "idle");
   }
+  ackPrevRaw = ack;
 
-  if (running != plcMachineRunning) {
+  if (running == runningPrevRaw && running != plcMachineRunning) {
     plcMachineRunning = running;
     Serial.printf("[PLC] MACHINE_RUNNING -> %s\n", running ? "ACTIVE" : "idle");
   }
+  runningPrevRaw = running;
 
-  if (bit2 != plcControlBit2) {
+  if (bit2 == bit2PrevRaw && bit2 != plcControlBit2) {
     plcControlBit2 = bit2;
     Serial.printf("[PLC] FROM_PLC_COMM bit 2 -> %s\n", bit2 ? "ACTIVE" : "idle");
   }
+  bit2PrevRaw = bit2;
 }
 
 //
