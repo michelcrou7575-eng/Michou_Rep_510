@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.59
+// Ref: TGIS-510_cpp_V4_15.61
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -426,13 +426,13 @@ namespace McpPin {
 constexpr uint8_t ILED_R = 8;  // GPB0, OUTPUT
 constexpr uint8_t ILED_G = 9;  // GPB1, OUTPUT
 constexpr uint8_t ILED_B = 10; // GPB2, OUTPUT
+constexpr uint8_t ELED_Y = 11; // GPB3, OUTPUT (3.3V/470ohm) -- external yellow LED
 // External status LED (operator-visible) -- single RGB LED (same one-
 // channel-at-a-time convention as internal) PLUS a separate discrete
 // yellow LED, so 4 selectable colors total, not 3.
 constexpr uint8_t ELED_R = 12; // GPB4, OUTPUT
 constexpr uint8_t ELED_G = 13; // GPB5, OUTPUT
 constexpr uint8_t ELED_B = 14; // GPB6, OUTPUT
-constexpr uint8_t ELED_Y = 15; // GPB7, OUTPUT (3.3V/470ohm) -- external yellow LED
 constexpr uint8_t INPUT_2 = 0; // GPA0, INPUT, Conn 1 -- FROM_PLC_COMM bit 1
 constexpr uint8_t OPTO_2 = 1;  // GPA1, OUTPUT (24V/220ohm), Conn 3 -- TO_PLC_COMM bit 1
 constexpr uint8_t INPUT_1 = 2; // GPA2, INPUT, Conn 2 -- FROM_PLC_COMM bit 0
@@ -1900,6 +1900,16 @@ void setButtonStatusLed(uint8_t buttonIndex, bool on) {
   mcp.digitalWrite(kMcpOutputPins[buttonIndex], on);
 }
 
+// Flips a button's status LED (current on/off state already tracked in
+// mcpOutputState[], reused rather than adding a second state array) --
+// called once per momentary press, not per raw bit level. Keyed only off
+// NS12::BUTTON_COUNT/kButtonAddrs/kMcpOutputPins, so any button added to
+// those arrays later gets latching LED behavior with no extra code here.
+void toggleButtonStatusLed(uint8_t buttonIndex) {
+  if (!mcpOk || buttonIndex >= NS12::BUTTON_COUNT) return;
+  setButtonStatusLed(buttonIndex, !mcpOutputState[buttonIndex]);
+}
+
 uint32_t burstProbeUntilMs = 0;
 constexpr uint32_t BURST_PROBE_DURATION_MS = 8000;
 
@@ -2137,21 +2147,22 @@ void handleHmiButtonPress(uint8_t index) {
   }
 }
 
+// buttonState[i] tracks the raw momentary "button is pressed" bit purely
+// for rising-edge detection -- the LED itself is latched by
+// toggleButtonStatusLed(), not mirrored from this bit, since a momentary
+// press would otherwise light the LED only while the screen is held down.
 void applyButtonBitUpdate(uint8_t i, bool pressed) {
   bool wasPressed = buttonState[i];
   buttonState[i] = pressed;
 
-  if (pressed != wasPressed) {
-    Serial.printf("[SWITCH] %s -> %s\n", kButtonNames[i], pressed ? "ON" : "OFF");
-    setButtonStatusLed(i, pressed);
-  }
-
   if (pressed && !wasPressed) {
+    toggleButtonStatusLed(i);
+    Serial.printf("[SWITCH] %s -> %s\n", kButtonNames[i], mcpOutputState[i] ? "ON" : "OFF");
+
     for (uint8_t j = 0; j < NS12::BUTTON_COUNT; j++) {
-      if (j == i || !buttonState[j]) continue;
+      if (j == i || !mcpOutputState[j]) continue;
       bool offBit = false;
       ns12.sendWB(kButtonAddrs[j], &offBit, 1);
-      buttonState[j] = false;
       setButtonStatusLed(j, false);
       Serial.printf("[SWITCH] %s -> OFF (reset by %s)\n", kButtonNames[j], kButtonNames[i]);
     }
