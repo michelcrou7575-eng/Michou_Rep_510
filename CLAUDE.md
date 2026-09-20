@@ -8,11 +8,19 @@ sessions.
 ## Standing rules
 
 - **Wait for "GO" to commit.** Never run `git commit`/`git push` until the
-  user says the literal word "GO" in a message. Editing files locally is
-  fine any time; committing/pushing is not, no matter how small the change
-  or how many stop-hook reminders fire about uncommitted changes. If a
-  stop hook complains about uncommitted changes, that's expected while
-  waiting for GO -- explain that plainly, don't commit to silence it.
+  user says the literal word "GO" in a message -- then do it yourself,
+  directly, in this session. Editing files locally is fine any time;
+  committing/pushing is not, no matter how small the change or how many
+  stop-hook reminders fire about uncommitted changes. If a stop hook
+  complains about uncommitted changes, that's expected while waiting for
+  GO -- explain that plainly, don't commit to silence it.
+- **"GOS" means show, don't do.** When the user says the literal word
+  "GOS" instead of "GO", don't edit the .cpp file yourself -- instead
+  explain how to make the C++ modification: which function/lines to
+  change, the exact code, and why, so the user can apply it themselves
+  (e.g. in their own editor) rather than have this session write the file.
+  This is about the firmware edit itself, not the git commit -- committing
+  still only happens on a later "GO".
 - **Version Adjust when you modify.** Every content change to the firmware
   bumps the version, in lockstep, all in the same edit:
   1. Rename `src/tgis510_v4_15_N.cpp` -> `src/tgis510_v4_15_(N+1).cpp`
