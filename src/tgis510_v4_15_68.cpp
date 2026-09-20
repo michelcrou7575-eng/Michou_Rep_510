@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.62
+// Ref: TGIS-510_cpp_V4_15.68
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -728,6 +728,21 @@ constexpr uint16_t LAMP_ALARM_LOG_ADDR = 41;
 constexpr uint16_t LAMP_TREND_FULL_ADDR = 42;
 constexpr uint16_t LAMP_TEST_ADDR = 43;
 constexpr uint16_t LAMP_DIAG_ADDR = 44;
+
+// Not part of the SETUP-group's mutually-exclusive bank (BUTTON_COUNT
+// above) -- a separate, independently-polled momentary button. Confirmed
+// from the Symbol Table ("Acknowledge" / "Acknowledge LAMP").
+constexpr uint16_t BUTTON_ACK_ADDR = 39;
+constexpr uint16_t LAMP_ACK_ADDR = 49;
+
+// Header status bits, confirmed from the Symbol Table -- outputs the ESP
+// writes, not inputs. $B2 "this Tube is BAD" mirrors FROM_PLC_COMM bit 2
+// (Pins::ESP_INPUT_3), which the PLC now drives with Keyence's pass/fail
+// result -- see servicePlcControl()'s tubeIsBad handling.
+constexpr uint16_t POWER_STATUS_ADDR = 0;   // "ESP Loop() is running" -- blinks
+constexpr uint16_t ESP_FAULTY_ADDR = 1;     // mirrors state == FaultStop
+constexpr uint16_t TUBE_BAD_ADDR = 2;       // mirrors FROM_PLC_COMM bit 2 (Keyence result via PLC)
+constexpr uint16_t OVERALL_ALARM_ADDR = 80; // OR of known subsystem failures, no latch
 
 constexpr uint32_t BUTTON_POLL_INTERVAL_MS = 2000;
 
@@ -1880,9 +1895,30 @@ constexpr uint16_t kButtonAddrs[NS12::BUTTON_COUNT] = {
     NS12::BUTTON_TEST_ADDR, NS12::BUTTON_DIAG_ADDR};
 const char *const kButtonNames[NS12::BUTTON_COUNT] = {"SETUP", "ALARM LOG", "TREND FULL", "TEST",
                                                        "DIAG"};
+// On-screen lamp bit for each button above, confirmed from the Symbol
+// Table ("SETUP Button LAMP" etc, $B40-$B44) -- same +10 offset pattern as
+// the diag buttons' $B550-577, just not yet wired to a WB write until now.
+constexpr uint16_t kButtonLampAddrs[NS12::BUTTON_COUNT] = {
+    NS12::LAMP_SETUP_ADDR, NS12::LAMP_ALARM_LOG_ADDR, NS12::LAMP_TREND_FULL_ADDR,
+    NS12::LAMP_TEST_ADDR, NS12::LAMP_DIAG_ADDR};
+// Index into kButtonNames/kButtonAddrs/mcpOutputState for the TEST screen's
+// own enable button -- every non-MAIN screen has one (same name as the
+// screen): its latched LED state (see toggleButtonStatusLed()) doubles as
+// that screen's arm/disarm switch. Off, the screen is read-only; on, its
+// own controls respond. Only TEST has controls today (the 28 diag/test
+// buttons below); SETUP/ALARM_LOG/TREND_FULL/DIAG have none yet to gate.
+constexpr uint8_t BUTTON_TEST_INDEX = 3;
 bool buttonState[NS12::BUTTON_COUNT] = {};
 uint32_t lastButtonPollMs = 0;
 uint8_t nextButtonPollIndex = 0;
+
+// Acknowledge ($B39/$B49) -- standalone, independently-polled momentary
+// button, not part of the SETUP-group bank above.
+bool ackButtonState = false;
+uint32_t lastAckPollMs = 0;
+bool ackLampState = false;
+uint32_t ackLampAutoOffAtMs = 0;
+constexpr uint32_t ACK_LAMP_AUTO_RESET_MS = 1000;
 
 constexpr char kDiagCommandChars[NS12::DIAG_BUTTON_COUNT] = {
     'S', 'W', 'I', 'G', 'F', '1', '2', '3', '4', '5', '6', '7', '8', '9',
@@ -1891,7 +1927,7 @@ const char *const kDiagButtonNames[NS12::DIAG_BUTTON_COUNT] = {
     "STANDBY",      "WAIT_TUBE",       "INSPECTING",  "TUBE_GAP",
     "FAULT_STOP",   "IO1",             "IO2",         "IO3",
     "IO4",          "IO5",             "IO6",         "IO7",
-    "IO8",          "IO9",             "OPTO3",       "KEYENCE_TRIG",
+    "IO8",          "IO9",             "YEL_LED_TEST", "KEYENCE_TRIG",
     "PLC_STATUS",   "TEST_PATTERN",    "CAPTURE_REARM", "BASELINE_CAPTURE",
     "FRAME_DUMP",   "REARM_BLANK",     "DIAGNOSTICS", "BURST_PROBE",
     "WORD_VERIFY",  "WB_RB_SELFTEST",  "NO_OFFSET_TEST", "MLX_LIVE_TOGGLE"};
@@ -1900,14 +1936,37 @@ bool diagButtonState[NS12::DIAG_BUTTON_COUNT] = {};
 // independent per button (unlike the SETUP-group's mutually-exclusive
 // bank, these 28 are separate one-shot actions, not a mode selector).
 bool diagLampState[NS12::DIAG_BUTTON_COUNT] = {};
+
+// true = one-shot command -- lamp lights on press purely to confirm the
+// ESP saw it, then auto-resets ~1s later (activateDiagLamp() below).
+// false = the button addresses a real persistent output (the numbered IO
+// block's LEDs/optos, and MLX_LIVE_TOGGLE's streaming mode), so its lamp
+// toggles and stays latched to reflect that output's actual current
+// state. Same 4-per-line layout as kDiagButtonNames above for side-by-
+// side auditing.
+constexpr bool kDiagLampAutoReset[NS12::DIAG_BUTTON_COUNT] = {
+    true,  true,  true,  true,   // STANDBY, WAIT_TUBE, INSPECTING, TUBE_GAP
+    true,  false, false, false,  // FAULT_STOP, IO1, IO2, IO3
+    false, false, false, false,  // IO4, IO5, IO6, IO7
+    false, false, false, true,   // IO8, IO9, YEL_LED_TEST, KEYENCE_TRIG
+    true,  true,  true,  true,   // PLC_STATUS, TEST_PATTERN, CAPTURE_REARM, BASELINE_CAPTURE
+    true,  true,  true,  true,   // FRAME_DUMP, REARM_BLANK, DIAGNOSTICS, BURST_PROBE
+    true,  true,  true,  false}; // WORD_VERIFY, WB_RB_SELFTEST, NO_OFFSET_TEST, MLX_LIVE_TOGGLE
+constexpr uint32_t DIAG_LAMP_AUTO_RESET_MS = 1000;
+uint32_t diagLampAutoOffAtMs[NS12::DIAG_BUTTON_COUNT] = {};
 uint32_t lastDiagButtonPollMs = 0;
 uint8_t nextDiagButtonPollIndex = 0;
 uint32_t diagButtonPressCount = 0;
 
 void setButtonStatusLed(uint8_t buttonIndex, bool on) {
-  if (!mcpOk || buttonIndex >= NS12::BUTTON_COUNT) return;
+  if (buttonIndex >= NS12::BUTTON_COUNT) return;
   mcpOutputState[buttonIndex] = on;
-  mcp.digitalWrite(kMcpOutputPins[buttonIndex], on);
+
+  if (mcpOk) mcp.digitalWrite(kMcpOutputPins[buttonIndex], on);
+  // On-screen lamp bit is over the NS12 serial link, independent of MCP
+  // I2C health -- send it even if the physical LED write above was
+  // skipped.
+  ns12.sendWB(kButtonLampAddrs[buttonIndex], &mcpOutputState[buttonIndex], 1);
 }
 
 // Flips a button's status LED (current on/off state already tracked in
@@ -1924,10 +1983,39 @@ void toggleButtonStatusLed(uint8_t buttonIndex) {
 // side equivalent of toggleButtonStatusLed() above, for buttons with no
 // physical LED. Same momentary-bit reasoning as the SETUP-group buttons:
 // called once per rising edge, not mirrored from the raw press level.
-void toggleDiagLamp(uint8_t diagIndex) {
+void setDiagLamp(uint8_t diagIndex, bool on) {
   if (diagIndex >= NS12::DIAG_BUTTON_COUNT) return;
-  diagLampState[diagIndex] = !diagLampState[diagIndex];
+  diagLampState[diagIndex] = on;
   ns12.sendWB((uint16_t)(NS12::DIAG_LAMP_BASE_ADDR + diagIndex), &diagLampState[diagIndex], 1);
+}
+
+// Called once per button press. kDiagLampAutoReset[i] decides the shape:
+// a one-shot command lights its lamp as a "the ESP saw this" confirmation
+// and schedules an automatic reset ~1s later (serviceDiagLampAutoReset()
+// below); a real persistent-output button just toggles and stays latched.
+void activateDiagLamp(uint8_t diagIndex) {
+  if (diagIndex >= NS12::DIAG_BUTTON_COUNT) return;
+
+  if (kDiagLampAutoReset[diagIndex]) {
+    setDiagLamp(diagIndex, true);
+    diagLampAutoOffAtMs[diagIndex] = millis() + DIAG_LAMP_AUTO_RESET_MS;
+  } else {
+    setDiagLamp(diagIndex, !diagLampState[diagIndex]);
+    diagLampAutoOffAtMs[diagIndex] = 0;
+  }
+}
+
+// Called every loop() iteration -- turns off any momentary confirmation
+// lamp whose 1s window has elapsed.
+void serviceDiagLampAutoReset() {
+  uint32_t now = millis();
+
+  for (uint8_t i = 0; i < NS12::DIAG_BUTTON_COUNT; i++) {
+    if (diagLampAutoOffAtMs[i] != 0 && (int32_t)(now - diagLampAutoOffAtMs[i]) >= 0) {
+      diagLampAutoOffAtMs[i] = 0;
+      setDiagLamp(i, false);
+    }
+  }
 }
 
 uint32_t burstProbeUntilMs = 0;
@@ -1952,10 +2040,11 @@ uint32_t buttonPressCount[NS12::BUTTON_COUNT] = {};
 //   ACKNOWLEDGE, bit 1 (McpPin::INPUT_2) = MACHINE_RUNNING -- independent
 //   flags, true/false in any combination, no encoding. Which physical
 //   input is which is this file's placeholder pairing -- confirm against
-//   the S7 program. Bit 2 (Pins::ESP_INPUT_3) is read and tracked
-//   (plcControlBit2 below) but nothing acts on its value yet -- it used
-//   to carry Keyence Result, which now wires directly to a PLC input
-//   instead of through the ESP32.
+//   the S7 program. Bit 2 (Pins::ESP_INPUT_3) is tubeIsBad below -- the
+//   PLC now relays Keyence's pass/fail result on this bit (Keyence itself
+//   wires directly to a PLC input, not through the ESP32), mirrored out
+//   to the HMI at $B2. HIGH = bad/fail is this file's assumed polarity,
+//   not yet confirmed against the S7 program.
 //   Bits 0-1 are read only during Standby/TubeGap, same ~20ms-cadence
 //   restriction as the rest of this file's MCP polling (an I2C
 //   transaction every loop() iteration would cost InspectingTube latency
@@ -1980,8 +2069,15 @@ void setStatus(PlcStatus s) {
 
 bool plcAcknowledge = false;
 bool plcMachineRunning = false;
-bool plcControlBit2 = false; // FROM_PLC_COMM bit 2 -- tracked/logged only, no behavior wired to it yet
+bool tubeIsBad = false; // FROM_PLC_COMM bit 2 -- Keyence pass/fail, relayed by the PLC; mirrored to $B2
 PlcComms::PlcStatus plcLastCommandedStatus = PlcComms::PlcStatus::STOP;
+
+// HMI header status bits ($B0/$B1/$B2/$B80) -- see their NS12::*_ADDR comment.
+constexpr uint32_t POWER_STATUS_BLINK_MS = 500;
+uint32_t lastPowerStatusBlinkMs = 0;
+bool powerStatusState = false;
+bool espFaultyLastSent = false;
+bool overallAlarmLastSent = false;
 
 void serviceHmiInputPolling() {
 #if NS12_ENABLE_RM_POLLING
@@ -2124,8 +2220,8 @@ void printDiagnostics() {
 #endif
   Serial.printf("PLC_STATUS (commanded) : %u (0=STOP/1=ALARM/2=WARNING/3=READY)\n",
                 (unsigned)plcLastCommandedStatus);
-  Serial.printf("PLC_CONTROL ACKNOWLEDGE/MACHINE_RUNNING/bit2 : %d / %d / %d\n", plcAcknowledge,
-                plcMachineRunning, plcControlBit2);
+  Serial.printf("PLC_CONTROL ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad : %d / %d / %d\n", plcAcknowledge,
+                plcMachineRunning, tubeIsBad);
   Serial.printf("HotMelt Start/End position (mm) : %.1f / %.1f (%s)\n",
                 hotMeltStartPositionMm, hotMeltEndPositionMm,
                 hotMeltPositionsFromHmi ? "from HMI" : "PLACEHOLDER fallback, not from HMI yet");
@@ -2190,6 +2286,44 @@ void applyButtonBitUpdate(uint8_t i, bool pressed) {
   }
 }
 
+// Acknowledge: clears FaultStop and disarms every screen's own Enable
+// toggle back to read-only (see BUTTON_TEST_INDEX comment) -- a full
+// "reset to a known safe state", not just a fault clear. One-shot, so its
+// lamp flashes to confirm receipt and auto-resets (serviceAckLampAutoReset()
+// below), the same reasoning as the 17 momentary diag-button lamps.
+void applyAckButtonUpdate(bool pressed) {
+  bool wasPressed = ackButtonState;
+  ackButtonState = pressed;
+
+  if (pressed && !wasPressed) {
+    Serial.println(F("[SWITCH] ACKNOWLEDGE -> pressed"));
+
+    if (state == SystemState::FaultStop) {
+      state = SystemState::Standby;
+    }
+
+    for (uint8_t j = 0; j < NS12::BUTTON_COUNT; j++) {
+      if (!mcpOutputState[j]) continue;
+      bool offBit = false;
+      ns12.sendWB(kButtonAddrs[j], &offBit, 1);
+      setButtonStatusLed(j, false);
+      Serial.printf("[SWITCH] %s -> OFF (reset by ACKNOWLEDGE)\n", kButtonNames[j]);
+    }
+
+    ackLampState = true;
+    ns12.sendWB(NS12::LAMP_ACK_ADDR, &ackLampState, 1);
+    ackLampAutoOffAtMs = millis() + ACK_LAMP_AUTO_RESET_MS;
+  }
+}
+
+void serviceAckLampAutoReset() {
+  if (ackLampAutoOffAtMs != 0 && (int32_t)(millis() - ackLampAutoOffAtMs) >= 0) {
+    ackLampAutoOffAtMs = 0;
+    ackLampState = false;
+    ns12.sendWB(NS12::LAMP_ACK_ADDR, &ackLampState, 1);
+  }
+}
+
 bool addrToDiagIndex(uint16_t addr, uint8_t &indexOut) {
   if (addr < NS12::DIAG_BUTTON_BASE_ADDR) return false;
   uint16_t idx = addr - NS12::DIAG_BUTTON_BASE_ADDR;
@@ -2213,10 +2347,17 @@ void applyDiagButtonUpdate(uint8_t i, bool pressed) {
   diagButtonState[i] = pressed;
 
   if (pressed && !wasPressed) {
+    // These 28 buttons live on the TEST screen -- ignore presses while its
+    // own enable toggle is off (screen is "just a display" until armed).
+    if (!mcpOutputState[BUTTON_TEST_INDEX]) {
+      Serial.printf("[HMI-DIAG] %s ($B%u) ignored -- TEST screen not enabled\n",
+                    kDiagButtonNames[i], (unsigned)(NS12::DIAG_BUTTON_BASE_ADDR + i));
+      return;
+    }
     diagButtonPressCount++;
     Serial.printf("[HMI-DIAG] %s ($B%u) -> '%c'\n", kDiagButtonNames[i],
                   (unsigned)(NS12::DIAG_BUTTON_BASE_ADDR + i), kDiagCommandChars[i]);
-    toggleDiagLamp(i);
+    activateDiagLamp(i);
     handleSerialCommand(kDiagCommandChars[i]);
   }
 }
@@ -2224,6 +2365,8 @@ void applyDiagButtonUpdate(uint8_t i, bool pressed) {
 
 void serviceHmiButtonPolling() {
 #if NS12_ENABLE_RM_POLLING
+  serviceDiagLampAutoReset();
+  serviceAckLampAutoReset();
   uint32_t now = millis();
 
   uint16_t notifyAddr;
@@ -2237,6 +2380,11 @@ void serviceHmiButtonPolling() {
       applyButtonBitUpdate(i, notifyPressed);
       matched = true;
       break;
+    }
+
+    if (!matched && notifyAddr == NS12::BUTTON_ACK_ADDR) {
+      applyAckButtonUpdate(notifyPressed);
+      matched = true;
     }
 
     if (!matched) {
@@ -2260,6 +2408,12 @@ void serviceHmiButtonPolling() {
       ns12.requestRB(kButtonAddrs[nextButtonPollIndex], 1);
       nextButtonPollIndex = (nextButtonPollIndex + 1) % NS12::BUTTON_COUNT;
     }
+  }
+
+  if (!noOffsetTestPending && !ns12.isReadPending() &&
+      now - lastAckPollMs >= NS12::BUTTON_POLL_INTERVAL_MS) {
+    lastAckPollMs = now;
+    ns12.requestRB(NS12::BUTTON_ACK_ADDR, 1);
   }
 
   if (!noOffsetTestPending && !ns12.isReadPending() &&
@@ -2289,6 +2443,11 @@ void serviceHmiButtonPolling() {
       break;
     }
 
+    if (!matched && addr == NS12::BUTTON_ACK_ADDR) {
+      applyAckButtonUpdate(pressed);
+      matched = true;
+    }
+
     if (!matched) {
       uint8_t diagIndex;
 
@@ -2311,13 +2470,15 @@ void serviceHmiButtonPolling() {
 // Debounced against relay chatter/line noise and the PLC's own outputs not
 // switching atomically: a bit is only accepted once it reads the same on
 // two consecutive ~20ms polls, so a one-poll glitch never reaches
-// plcAcknowledge/plcMachineRunning/plcControlBit2 or their log lines.
+// plcAcknowledge/plcMachineRunning/tubeIsBad or their log lines.
 void servicePlcControl() {
   if (!mcpOk || !(state == SystemState::Standby || state == SystemState::TubeGap)) return;
-  static bool ackPrevRaw = false, runningPrevRaw = false, bit2PrevRaw = false;
+  static bool ackPrevRaw = false, runningPrevRaw = false, tubeBadPrevRaw = false;
   bool ack = (mcp.digitalRead(McpPin::INPUT_1) == LOW); // INPUT_PULLUP: idle HIGH
   bool running = (mcp.digitalRead(McpPin::INPUT_2) == LOW);
-  bool bit2 = (digitalRead(Pins::ESP_INPUT_3) == HIGH); // FROM_PLC_COMM bit 2, no action wired yet
+  // HIGH = bad/fail -- this file's assumed polarity for the PLC's relayed
+  // Keyence result, not yet confirmed against the S7 program.
+  bool tubeBad = (digitalRead(Pins::ESP_INPUT_3) == HIGH);
 
   if (ack == ackPrevRaw && ack != plcAcknowledge) {
     plcAcknowledge = ack;
@@ -2331,11 +2492,12 @@ void servicePlcControl() {
   }
   runningPrevRaw = running;
 
-  if (bit2 == bit2PrevRaw && bit2 != plcControlBit2) {
-    plcControlBit2 = bit2;
-    Serial.printf("[PLC] FROM_PLC_COMM bit 2 -> %s\n", bit2 ? "ACTIVE" : "idle");
+  if (tubeBad == tubeBadPrevRaw && tubeBad != tubeIsBad) {
+    tubeIsBad = tubeBad;
+    Serial.printf("[PLC] Keyence result (via PLC) -> %s\n", tubeBad ? "FAIL" : "PASS");
+    ns12.sendWB(NS12::TUBE_BAD_ADDR, &tubeIsBad, 1);
   }
-  bit2PrevRaw = bit2;
+  tubeBadPrevRaw = tubeBad;
 }
 
 //
@@ -2386,10 +2548,11 @@ void handleSerialCommand(char c) {
     break;
   }
   case 'A': {
-    bool newState = !digitalRead(Pins::ESP_OPTO_3);
-    digitalWrite(Pins::ESP_OPTO_3, newState);
-    Serial.printf("[IO-TEST] ESP_OPTO_3 (GPIO%u) -> %s\n", Pins::ESP_OPTO_3,
-                  newState ? "HIGH" : "LOW");
+    // Was an ESP_OPTO_3 toggle -- no longer safe now that pin is a live
+    // TO_PLC_COMM bit, not a free test output. Panel button 10 (was
+    // "OPTO3") is repurposed as a Yellow LED test instead.
+    toggleMcpOutput(6); // kMcpOutputPins[6] == McpPin::ELED_Y
+    Serial.printf("[IO-TEST] ELED_Y -> %s\n", mcpOutputState[6] ? "HIGH" : "LOW");
     break;
   }
   case 'K':
@@ -2621,6 +2784,34 @@ void loop() {
     if (wantStatus != plcLastCommandedStatus) {
       plcLastCommandedStatus = wantStatus;
       PlcComms::setStatus(wantStatus);
+    }
+  }
+
+  // HMI header status bits: $B0 blinks to prove loop() is alive, $B1
+  // mirrors FaultStop, $B80 is a non-latching OR of every subsystem
+  // failure the ESP currently knows about (NS12/PLC comms don't have a
+  // live-health tracker yet, so they aren't in this OR until they do).
+  {
+    uint32_t now = millis();
+
+    if (now - lastPowerStatusBlinkMs >= POWER_STATUS_BLINK_MS) {
+      lastPowerStatusBlinkMs = now;
+      powerStatusState = !powerStatusState;
+      ns12.sendWB(NS12::POWER_STATUS_ADDR, &powerStatusState, 1);
+    }
+
+    bool espFaulty = (state == SystemState::FaultStop);
+
+    if (espFaulty != espFaultyLastSent) {
+      espFaultyLastSent = espFaulty;
+      ns12.sendWB(NS12::ESP_FAULTY_ADDR, &espFaultyLastSent, 1);
+    }
+
+    bool overallAlarm = espFaulty || !mcpOk || !mlxInitialized;
+
+    if (overallAlarm != overallAlarmLastSent) {
+      overallAlarmLastSent = overallAlarm;
+      ns12.sendWB(NS12::OVERALL_ALARM_ADDR, &overallAlarmLastSent, 1);
     }
   }
 
