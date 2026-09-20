@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.61
+// Ref: TGIS-510_cpp_V4_15.62
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -734,6 +734,12 @@ constexpr uint32_t BUTTON_POLL_INTERVAL_MS = 2000;
 constexpr uint16_t DIAG_BUTTON_BASE_ADDR = 50;
 constexpr uint8_t DIAG_BUTTON_COUNT = 28;
 constexpr uint32_t DIAG_BUTTON_POLL_INTERVAL_MS = 2000; // safety-net only, same reasoning as BUTTON_POLL_INTERVAL_MS
+
+// User-added HMI bits, one per diag button, offset +500 from
+// DIAG_BUTTON_BASE_ADDR ($B550-$B577) -- a status/lamp bit the panel
+// renders on the button itself, since these 28 buttons have no physical
+// LED the way the 5 SETUP-group buttons do.
+constexpr uint16_t DIAG_LAMP_BASE_ADDR = DIAG_BUTTON_BASE_ADDR + 500;
 } // namespace NS12
 
 class NS12Manager {
@@ -1890,6 +1896,10 @@ const char *const kDiagButtonNames[NS12::DIAG_BUTTON_COUNT] = {
     "FRAME_DUMP",   "REARM_BLANK",     "DIAGNOSTICS", "BURST_PROBE",
     "WORD_VERIFY",  "WB_RB_SELFTEST",  "NO_OFFSET_TEST", "MLX_LIVE_TOGGLE"};
 bool diagButtonState[NS12::DIAG_BUTTON_COUNT] = {};
+// Latched lamp state for each diag button's $B(550-577) status bit --
+// independent per button (unlike the SETUP-group's mutually-exclusive
+// bank, these 28 are separate one-shot actions, not a mode selector).
+bool diagLampState[NS12::DIAG_BUTTON_COUNT] = {};
 uint32_t lastDiagButtonPollMs = 0;
 uint8_t nextDiagButtonPollIndex = 0;
 uint32_t diagButtonPressCount = 0;
@@ -1908,6 +1918,16 @@ void setButtonStatusLed(uint8_t buttonIndex, bool on) {
 void toggleButtonStatusLed(uint8_t buttonIndex) {
   if (!mcpOk || buttonIndex >= NS12::BUTTON_COUNT) return;
   setButtonStatusLed(buttonIndex, !mcpOutputState[buttonIndex]);
+}
+
+// Flips a diag button's own $B(550-577) lamp bit on the panel -- the HMI-
+// side equivalent of toggleButtonStatusLed() above, for buttons with no
+// physical LED. Same momentary-bit reasoning as the SETUP-group buttons:
+// called once per rising edge, not mirrored from the raw press level.
+void toggleDiagLamp(uint8_t diagIndex) {
+  if (diagIndex >= NS12::DIAG_BUTTON_COUNT) return;
+  diagLampState[diagIndex] = !diagLampState[diagIndex];
+  ns12.sendWB((uint16_t)(NS12::DIAG_LAMP_BASE_ADDR + diagIndex), &diagLampState[diagIndex], 1);
 }
 
 uint32_t burstProbeUntilMs = 0;
@@ -2196,6 +2216,7 @@ void applyDiagButtonUpdate(uint8_t i, bool pressed) {
     diagButtonPressCount++;
     Serial.printf("[HMI-DIAG] %s ($B%u) -> '%c'\n", kDiagButtonNames[i],
                   (unsigned)(NS12::DIAG_BUTTON_BASE_ADDR + i), kDiagCommandChars[i]);
+    toggleDiagLamp(i);
     handleSerialCommand(kDiagCommandChars[i]);
   }
 }
