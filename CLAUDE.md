@@ -42,6 +42,14 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V4.15.68** -- Resolves V4.15.67's open `$B2` question: the PLC now
+  relays Keyence's pass/fail result on `FROM_PLC_COMM` bit 2
+  (`Pins::ESP_INPUT_3`), per the user's explicit call. Renamed
+  `plcControlBit2` -> `tubeIsBad` throughout; `servicePlcControl()`'s
+  existing debounce for that bit now also mirrors it straight to `$B2`
+  ("this Tube is BAD") on change. Polarity (HIGH = bad/fail) is this
+  file's assumption, flagged as unconfirmed against the S7 program, same
+  as the other FROM_PLC_COMM/TO_PLC_COMM bit-to-pin choices.
 - **V4.15.67** -- Wired 3 of the 4 header status bits the operator
   specified: `$B0` ("ESP Loop() is running") blinks every 500ms to prove
   liveness; `$B1` ("ESP Faulty") mirrors `state == FaultStop`; `$B80`
@@ -49,10 +57,7 @@ sessions.
   every subsystem failure the ESP currently tracks (`FaultStop`, `!mcpOk`,
   `!mlxInitialized`) -- NS12/PLC comms don't have a live-health tracker
   yet, so they aren't in that OR until they do. `$B2` ("this Tube is BAD")
-  is NOT wired: the ESP has had no Keyence pass/fail signal since Keyence
-  Result moved to wire directly into a PLC input (V4.15.56) -- asked the
-  user whether `FROM_PLC_COMM` bit 2 (still-unassigned behavior) should
-  carry that result back from the PLC.
+  was left unwired at the time (see V4.15.68 above for how it resolved).
 - **V4.15.66** -- User uploaded the real CX-Designer Symbol Table
   (`Symbol Table`, project 510_HotMel_20260902_1) -- confirms every
   address this file already assumed ($B30-34/40-44 SETUP-group buttons +
