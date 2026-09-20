@@ -42,6 +42,35 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V4.15.66** -- User uploaded the real CX-Designer Symbol Table
+  (`Symbol Table`, project 510_HotMel_20260902_1) -- confirms every
+  address this file already assumed ($B30-34/40-44 SETUP-group buttons +
+  lamps, $B50-77/550-577 diag buttons + lamps, $W50/700-827/828-830) is
+  exactly right, and reveals several previously-unwired ones:
+  - `$B39`/`$B49` = Acknowledge button/lamp -- added as a standalone,
+    independently-polled momentary button (not part of the SETUP-group's
+    mutually-exclusive bank). Per the operator's spec, ACK now clears
+    `FaultStop` AND disarms every screen's Enable toggle back to
+    read-only (a full reset-to-safe-state), with its lamp flashing 1s to
+    confirm receipt (same pattern as the 17 momentary diag-button lamps).
+  - `$B40-44` "SETUP/ALARM LOG/TREND FULL/TEST/DIAG Button LAMP" -- these
+    addresses were already declared (`LAMP_SETUP_ADDR` etc.) but never
+    used. `setButtonStatusLed()` now also sends a WB to the matching
+    on-screen lamp bit, in addition to the physical MCP LED it already
+    drove -- both update together now.
+  - **Still unwired, needs a spec before implementing**: `$B38` "Fail
+    Button" (distinct from Acknowledge -- what should it do?), and
+    `$B0`/`$B1`/`$B2`/`$B80` "Power/Fault/Fail/Alarm Status" (read as
+    outputs the ESP should drive to the header status icon on every
+    screen, but which bit means what isn't specified yet).
+- **V4.15.65** -- Per the operator's spec: of the 28 TEST-screen buttons,
+  the first 17 in panel order (state buttons + all named actions except
+  `MLX_LIVE_TOGGLE`) are one-shot commands where a persistent lamp would
+  misleadingly suggest an ongoing state -- their lamp now lights on press
+  purely to confirm the ESP saw it, then auto-resets ~1s later
+  (`kDiagLampAutoReset[]`, `activateDiagLamp()`, `serviceDiagLampAutoReset()`).
+  The other 11 (numbered IO block + `MLX_LIVE_TOGGLE`) address real
+  persistent outputs, so those still toggle and stay latched as before.
 - **V4.15.64** -- Every non-MAIN HMI screen has its own "Enable" button
   (same name as the screen, e.g. `TEST`, `SETUP`, `DIAG`) whose latched
   state (already tracked by `toggleButtonStatusLed()`/`mcpOutputState[]`
@@ -120,6 +149,10 @@ sessions.
 
 ## Architecture notes worth knowing
 
+- The real CX-Designer address map is checked into the repo root as
+  `Symbol Table` (project 510_HotMel_20260902_1) -- the ground truth for
+  every `$B`/`$W` address, confirmed against this file in V4.15.66. Check
+  it before guessing at an address for anything new.
 - NS12 (Omron NS12-TS00B-V2 HMI) talks over RS232 (`Serial2`, 38400 baud),
   entirely separate from I2C. I2C only carries the MLX90640 camera and the
   MCP23017 I/O expander (address `0x20`, A0/A1/A2 grounded; RESET pin must
