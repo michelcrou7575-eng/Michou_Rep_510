@@ -14,6 +14,9 @@ sessions.
   stop-hook reminders fire about uncommitted changes. If a stop hook
   complains about uncommitted changes, that's expected while waiting for
   GO -- explain that plainly, don't commit to silence it.
+  **Exception: `.md` files** (this file included) don't need a "GO" --
+  commit and push those immediately after editing them. The GO/GOS gate is
+  only for firmware (`.cpp`/`platformio.ini`) changes.
 - **"GOS" means show, don't do.** When the user says the literal word
   "GOS" instead of "GO", don't edit the .cpp file yourself -- instead
   explain how to make the C++ modification: which function/lines to
@@ -39,6 +42,35 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V4.15.64** -- Every non-MAIN HMI screen has its own "Enable" button
+  (same name as the screen, e.g. `TEST`, `SETUP`, `DIAG`) whose latched
+  state (already tracked by `toggleButtonStatusLed()`/`mcpOutputState[]`
+  since V4.15.61) doubles as that screen's arm/disarm switch: off, the
+  screen is read-only ("just a screen display"); on, its own controls
+  respond. Added `BUTTON_TEST_INDEX` and gated `applyDiagButtonUpdate()`
+  (the 28 TEST-screen buttons) behind `mcpOutputState[BUTTON_TEST_INDEX]`
+  -- a press is ignored and logged while TEST isn't enabled. SETUP/
+  ALARM_LOG/TREND_FULL/DIAG have no controls of their own yet, so nothing
+  to gate there today; the same pattern (index into `mcpOutputState[]`)
+  applies once they do.
+- **V4.15.63** -- Panel button 10 (was labeled "OPTO3") no longer toggles
+  `ESP_OPTO_3` directly -- that pin is now a live `TO_PLC_COMM` bit, not a
+  free test output. Renamed `kDiagButtonNames[14]` to `"YEL_LED_TEST"` and
+  `case 'A'` in `handleSerialCommand()` now toggles `McpPin::ELED_Y`
+  instead (via the existing `toggleMcpOutput(6)`). Note: this duplicates
+  IO7 (`'7'`), which already toggles the same LED.
+- **V4.15.62** -- User added a status/lamp bit per diag button on the HMI
+  side, `$B550-$B577`, offset +500 from each button's own `$B(50-77)`
+  address -- gives the 28 diag buttons (which have no physical LED, unlike
+  the 5 SETUP-group buttons) a lamp on the panel itself. Added
+  `NS12::DIAG_LAMP_BASE_ADDR` (computed as `DIAG_BUTTON_BASE_ADDR + 500`,
+  not hardcoded, so it tracks the base address if that ever moves),
+  `diagLampState[]`, and `toggleDiagLamp()` -- flips the lamp once per
+  rising edge of the button's momentary press, independent per button (no
+  mutual exclusion, since these are 28 separate one-shot actions, not a
+  mode selector like the SETUP-group bank). Wired into
+  `applyDiagButtonUpdate()` alongside the existing `handleSerialCommand()`
+  call.
 - **V4.15.61** -- `ELED_Y` moved from GPB7 (15) to GPB3 (11) to match the
   user's confirmed pin layout, freeing GPB7. Added `toggleButtonStatusLed()`:
   the 5 SETUP-group HMI buttons ($B30-$B34) report a *momentary* "button is
@@ -102,3 +134,14 @@ sessions.
   `$W830` is `matrixPushCounter` (see V4.15.59); `$W100-$W108` are the
   telemetry block, all 9 words already assigned -- no free slots in either
   range.
+- `$B50-$B77` are the 28 diag buttons (momentary press bits); `$B550-$B577`
+  are their matching lamp bits, offset +500, user-added on the panel (see
+  V4.15.62). `$B30-$B34` are the 5 SETUP-group buttons, also momentary --
+  those drive physical MCP LEDs instead (see V4.15.61), not HMI lamp bits.
+- 6 HMI screens exist: MAIN, TREND (+TREND FULL), SETUP, DIAG (read-only
+  telemetry, no buttons), TEST (all 28 diag/test buttons), ALARM LOG
+  (read-only log, no buttons). Every screen except MAIN has an Enable
+  button matching its own name, whose latched state gates that screen's
+  own controls (see V4.15.64) -- currently only TEST has controls to gate.
+  The panel's numbered IO block runs 1-10, not 1-9: button 10 replaced the
+  old standalone "OPTO3" test (see V4.15.63).
