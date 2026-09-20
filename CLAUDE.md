@@ -42,6 +42,17 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V4.15.67** -- Wired 3 of the 4 header status bits the operator
+  specified: `$B0` ("ESP Loop() is running") blinks every 500ms to prove
+  liveness; `$B1` ("ESP Faulty") mirrors `state == FaultStop`; `$B80`
+  ("Overall Alarm... if healthy = OFF, no latch") is a non-latching OR of
+  every subsystem failure the ESP currently tracks (`FaultStop`, `!mcpOk`,
+  `!mlxInitialized`) -- NS12/PLC comms don't have a live-health tracker
+  yet, so they aren't in that OR until they do. `$B2` ("this Tube is BAD")
+  is NOT wired: the ESP has had no Keyence pass/fail signal since Keyence
+  Result moved to wire directly into a PLC input (V4.15.56) -- asked the
+  user whether `FROM_PLC_COMM` bit 2 (still-unassigned behavior) should
+  carry that result back from the PLC.
 - **V4.15.66** -- User uploaded the real CX-Designer Symbol Table
   (`Symbol Table`, project 510_HotMel_20260902_1) -- confirms every
   address this file already assumed ($B30-34/40-44 SETUP-group buttons +
