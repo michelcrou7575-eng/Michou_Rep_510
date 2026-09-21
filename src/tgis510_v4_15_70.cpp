@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.69
+// Ref: TGIS-510_cpp_V4_15.70
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -2241,6 +2241,12 @@ void printDiagnostics() {
                 (unsigned)plcLastCommandedStatus);
   Serial.printf("PLC_CONTROL ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad : %d / %d / %d\n", plcAcknowledge,
                 plcMachineRunning, tubeIsBad);
+  Serial.print(F("Screen Enable toggles ($B30-34)   : "));
+
+  for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++) {
+    Serial.printf("%s=%s%s", kButtonNames[i], mcpOutputState[i] ? "ON" : "off",
+                  (i + 1 < NS12::BUTTON_COUNT) ? "  " : "\n");
+  }
   Serial.printf("HotMelt Start/End position (mm) : %.1f / %.1f (%s)\n",
                 hotMeltStartPositionMm, hotMeltEndPositionMm,
                 hotMeltPositionsFromHmi ? "from HMI" : "PLACEHOLDER fallback, not from HMI yet");
