@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.68
+// Ref: TGIS-510_cpp_V4_15.69
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -735,6 +735,11 @@ constexpr uint16_t LAMP_DIAG_ADDR = 44;
 constexpr uint16_t BUTTON_ACK_ADDR = 39;
 constexpr uint16_t LAMP_ACK_ADDR = 49;
 
+// Top-right FAIL button -- narrower than Acknowledge: only clears the
+// bad-tube flag (tubeIsBad/$B2), not FaultStop or the screen Enable
+// toggles. No dedicated lamp in the Symbol Table (unlike Acknowledge).
+constexpr uint16_t BUTTON_FAIL_ADDR = 38;
+
 // Header status bits, confirmed from the Symbol Table -- outputs the ESP
 // writes, not inputs. $B2 "this Tube is BAD" mirrors FROM_PLC_COMM bit 2
 // (Pins::ESP_INPUT_3), which the PLC now drives with Keyence's pass/fail
@@ -981,7 +986,16 @@ public:
     size_t sent = Serial2.write(reinterpret_cast<uint8_t *>(frame), n);
 
     if (sent != n) {
+      // Retry once immediately, same reasoning as sendWM()'s fix: a bit
+      // write silently dropped here is exactly what leaves a button/lamp
+      // LED stuck showing the wrong state until the next full press.
+      sent += Serial2.write(reinterpret_cast<uint8_t *>(frame + sent), n - sent);
+    }
+
+    if (sent != n) {
       wbFailures++;
+      Serial.printf("[NS12] WB write failed: addr=0x%04X count=%u (%u/%u bytes sent)\n",
+                    startAddr, (unsigned)count, (unsigned)sent, (unsigned)n);
     }
     // No blocking flush -- same rationale as sendWM(): never stall the loop.
     markTxBusy(n);
@@ -1920,6 +1934,11 @@ bool ackLampState = false;
 uint32_t ackLampAutoOffAtMs = 0;
 constexpr uint32_t ACK_LAMP_AUTO_RESET_MS = 1000;
 
+// FAIL ($B38) -- standalone, independently-polled momentary button. No
+// lamp of its own (see NS12::BUTTON_FAIL_ADDR comment).
+bool failButtonState = false;
+uint32_t lastFailPollMs = 0;
+
 constexpr char kDiagCommandChars[NS12::DIAG_BUTTON_COUNT] = {
     'S', 'W', 'I', 'G', 'F', '1', '2', '3', '4', '5', '6', '7', '8', '9',
     'A', 'K', 'P', 'M', 'C', 'B', 'X', 'R', 'D', 'H', 'V', 'J', 'N', 'L'};
@@ -2242,25 +2261,18 @@ void printDiagnostics() {
 
 #if NS12_ENABLE_RM_POLLING
 
+// TEST/DIAG used to also fire pushTestPattern()/printDiagnostics()
+// directly here, back when pressing them meant "do the thing". Now that
+// they're screen Enable toggles (see BUTTON_TEST_INDEX), that would fire
+// the action every time the screen is armed/disarmed, on top of the same
+// actions already reachable from the TEST screen's own TEST_PATTERN/
+// DIAGNOSTICS buttons -- dropped to avoid the double-trigger. SETUP/
+// ALARM LOG/TREND FULL never had a subsystem to act on and still don't;
+// each just gets its own status LED as physical confirmation (see
+// setButtonStatusLed()'s comment).
 void handleHmiButtonPress(uint8_t index) {
   buttonPressCount[index]++;
   Serial.printf("[HMI] %s button pressed.\n", kButtonNames[index]);
-  switch (index) {
-  case 3: // TEST -- same one-shot pattern as the 'M' serial command
-    pushTestPattern();
-    break;
-  case 4: // DIAG -- same immediate report as the 'D' serial command
-    printDiagnostics();
-    break;
-  // SETUP / ALARM LOG / TREND FULL: no subsystem exists yet for these --
-  // no setup-parameter screen, no alarm log, no trend recording. Real
-  // behavior needs a spec -- what SETUP should configure, where the alarm
-  // log lives, what TREND FULL should show. Each has a dedicated status
-  // LED instead (set in serviceHmiButtonPolling() -- see
-  // setButtonStatusLed()'s comment) as its physical confirmation.
-  default:
-    break;
-  }
 }
 
 // buttonState[i] tracks the raw momentary "button is pressed" bit purely
@@ -2321,6 +2333,24 @@ void serviceAckLampAutoReset() {
     ackLampAutoOffAtMs = 0;
     ackLampState = false;
     ns12.sendWB(NS12::LAMP_ACK_ADDR, &ackLampState, 1);
+  }
+}
+
+// FAIL: narrower than Acknowledge -- only clears the bad-tube flag
+// (tubeIsBad/$B2), leaves FaultStop and the screen Enable toggles alone.
+// NOTE: tubeIsBad is re-driven from the PLC's own bit 2 level every
+// Standby/TubeGap poll (servicePlcControl()), not edge-triggered -- if
+// the PLC hasn't also dropped its signal, the very next poll will set
+// tubeIsBad back to true right after this clears it. Acking here is a
+// local display clear, not a guarantee the condition is gone.
+void applyFailButtonUpdate(bool pressed) {
+  bool wasPressed = failButtonState;
+  failButtonState = pressed;
+
+  if (pressed && !wasPressed) {
+    Serial.println(F("[SWITCH] FAIL -> pressed (clearing tubeIsBad)"));
+    tubeIsBad = false;
+    ns12.sendWB(NS12::TUBE_BAD_ADDR, &tubeIsBad, 1);
   }
 }
 
@@ -2387,6 +2417,11 @@ void serviceHmiButtonPolling() {
       matched = true;
     }
 
+    if (!matched && notifyAddr == NS12::BUTTON_FAIL_ADDR) {
+      applyFailButtonUpdate(notifyPressed);
+      matched = true;
+    }
+
     if (!matched) {
       uint8_t diagIndex;
 
@@ -2414,6 +2449,12 @@ void serviceHmiButtonPolling() {
       now - lastAckPollMs >= NS12::BUTTON_POLL_INTERVAL_MS) {
     lastAckPollMs = now;
     ns12.requestRB(NS12::BUTTON_ACK_ADDR, 1);
+  }
+
+  if (!noOffsetTestPending && !ns12.isReadPending() &&
+      now - lastFailPollMs >= NS12::BUTTON_POLL_INTERVAL_MS) {
+    lastFailPollMs = now;
+    ns12.requestRB(NS12::BUTTON_FAIL_ADDR, 1);
   }
 
   if (!noOffsetTestPending && !ns12.isReadPending() &&
@@ -2445,6 +2486,11 @@ void serviceHmiButtonPolling() {
 
     if (!matched && addr == NS12::BUTTON_ACK_ADDR) {
       applyAckButtonUpdate(pressed);
+      matched = true;
+    }
+
+    if (!matched && addr == NS12::BUTTON_FAIL_ADDR) {
+      applyFailButtonUpdate(pressed);
       matched = true;
     }
 
