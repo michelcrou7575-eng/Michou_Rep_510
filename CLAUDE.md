@@ -42,6 +42,24 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V4.15.69** -- Three fixes from real hardware testing:
+  - Added the `$B38` FAIL button (top-right, distinct from Acknowledge):
+    only clears `tubeIsBad`/`$B2`, leaves `FaultStop` and the screen
+    Enable toggles alone. No dedicated lamp (not in the Symbol Table).
+    Caveat noted in code: `tubeIsBad` is level-driven from the PLC's own
+    bit 2 every poll, not edge-triggered, so if the PLC hasn't also
+    dropped its signal, the next poll re-asserts it -- this is a local
+    display clear, not a guarantee.
+  - Removed `handleHmiButtonPress()`'s old `pushTestPattern()`/
+    `printDiagnostics()` side effects on the `TEST`/`DIAG` SETUP-group
+    buttons -- now that those buttons are screen Enable toggles (not
+    one-shot actions), firing the old action on every arm/disarm
+    double-triggered what's already reachable from the TEST screen's own
+    `TEST_PATTERN`/`DIAGNOSTICS` grid buttons.
+  - `sendWB()` now retries once on a partial write and logs
+    addr/count/bytes-sent on failure, same fix as `sendWM()` got in
+    V4.15.59 -- a dropped WB is exactly what leaves a button/lamp LED
+    stuck showing the wrong state.
 - **V4.15.68** -- Resolves V4.15.67's open `$B2` question: the PLC now
   relays Keyence's pass/fail result on `FROM_PLC_COMM` bit 2
   (`Pins::ESP_INPUT_3`), per the user's explicit call. Renamed
