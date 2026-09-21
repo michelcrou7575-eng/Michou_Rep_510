@@ -42,6 +42,10 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V4.15.70** -- `printDiagnostics()` now prints each SETUP-group
+  button's current Enable state by name (`mcpOutputState[0..4]`,
+  `$B30-34`), to help debug a reported problem with those toggles from
+  the terminal.
 - **V4.15.69** -- Three fixes from real hardware testing:
   - Added the `$B38` FAIL button (top-right, distinct from Acknowledge):
     only clears `tubeIsBad`/`$B2`, leaves `FaultStop` and the screen
