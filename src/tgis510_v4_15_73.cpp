@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.70
+// Ref: TGIS-510_cpp_V4_15.73
 //
 // Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
 // Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
@@ -449,7 +449,7 @@ bool mcpOutputState[9] = {false, false, false, false, false, false, false, false
 void toggleMcpOutput(uint8_t idx) {
   if (!mcpOk || idx >= 9) return;
   mcpOutputState[idx] = !mcpOutputState[idx];
-  mcp.digitalWrite(kMcpOutputPins[idx], mcpOutputState[idx]);
+  mcp.digitalWrite(kMcpOutputPins[idx], mcpOutputState[idx]); // kMcpOutputPins[idx] -> mcpOutputState[idx] (HIGH/LOW)
 }
 
 // =====================================================================
@@ -1977,25 +1977,38 @@ uint32_t lastDiagButtonPollMs = 0;
 uint8_t nextDiagButtonPollIndex = 0;
 uint32_t diagButtonPressCount = 0;
 
+// Screen Enable state for the 5 SETUP-group buttons -- deliberately its
+// own array, NOT mcpOutputState[] (that one belongs to the numbered
+// IO-test toggles '1'-'9', kMcpOutputPins indices 0-8). The two used to
+// share mcpOutputState[0..4]: pressing IO1-IO5 on the TEST screen
+// (toggleMcpOutput(0..4)) silently flipped the same slots this file reads
+// as "is SETUP/ALARM_LOG/TREND_FULL/TEST/DIAG armed", corrupting the
+// screen-enable gate and desyncing $B4x lamps from the button's real
+// state -- the "$B43 not following $B33" and "IO4 affects TEST" reports.
+// The physical LED confirmation still reuses kMcpOutputPins[0..4] (same
+// enclosure LEDs IO1-IO5 also target) -- that pin-sharing is unchanged
+// and intentional; only the logical state that drives the on-screen lamp
+// and the gate is now independent of it.
+bool buttonEnableState[NS12::BUTTON_COUNT] = {};
+
 void setButtonStatusLed(uint8_t buttonIndex, bool on) {
   if (buttonIndex >= NS12::BUTTON_COUNT) return;
-  mcpOutputState[buttonIndex] = on;
+  buttonEnableState[buttonIndex] = on;
 
   if (mcpOk) mcp.digitalWrite(kMcpOutputPins[buttonIndex], on);
   // On-screen lamp bit is over the NS12 serial link, independent of MCP
   // I2C health -- send it even if the physical LED write above was
   // skipped.
-  ns12.sendWB(kButtonLampAddrs[buttonIndex], &mcpOutputState[buttonIndex], 1);
+  ns12.sendWB(kButtonLampAddrs[buttonIndex], &buttonEnableState[buttonIndex], 1);
 }
 
-// Flips a button's status LED (current on/off state already tracked in
-// mcpOutputState[], reused rather than adding a second state array) --
-// called once per momentary press, not per raw bit level. Keyed only off
-// NS12::BUTTON_COUNT/kButtonAddrs/kMcpOutputPins, so any button added to
-// those arrays later gets latching LED behavior with no extra code here.
+// Flips a button's Enable state -- called once per momentary press, not
+// per raw bit level. Keyed only off NS12::BUTTON_COUNT/kButtonAddrs/
+// kMcpOutputPins, so any button added to those arrays later gets latching
+// LED behavior with no extra code here.
 void toggleButtonStatusLed(uint8_t buttonIndex) {
-  if (!mcpOk || buttonIndex >= NS12::BUTTON_COUNT) return;
-  setButtonStatusLed(buttonIndex, !mcpOutputState[buttonIndex]);
+  if (buttonIndex >= NS12::BUTTON_COUNT) return;
+  setButtonStatusLed(buttonIndex, !buttonEnableState[buttonIndex]);
 }
 
 // Flips a diag button's own $B(550-577) lamp bit on the panel -- the HMI-
@@ -2244,7 +2257,7 @@ void printDiagnostics() {
   Serial.print(F("Screen Enable toggles ($B30-34)   : "));
 
   for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++) {
-    Serial.printf("%s=%s%s", kButtonNames[i], mcpOutputState[i] ? "ON" : "off",
+    Serial.printf("%s=%s%s", kButtonNames[i], buttonEnableState[i] ? "ON" : "off",
                   (i + 1 < NS12::BUTTON_COUNT) ? "  " : "\n");
   }
   Serial.printf("HotMelt Start/End position (mm) : %.1f / %.1f (%s)\n",
@@ -2291,10 +2304,10 @@ void applyButtonBitUpdate(uint8_t i, bool pressed) {
 
   if (pressed && !wasPressed) {
     toggleButtonStatusLed(i);
-    Serial.printf("[SWITCH] %s -> %s\n", kButtonNames[i], mcpOutputState[i] ? "ON" : "OFF");
+    Serial.printf("[SWITCH] %s -> %s\n", kButtonNames[i], buttonEnableState[i] ? "ON" : "OFF");
 
     for (uint8_t j = 0; j < NS12::BUTTON_COUNT; j++) {
-      if (j == i || !mcpOutputState[j]) continue;
+      if (j == i || !buttonEnableState[j]) continue;
       bool offBit = false;
       ns12.sendWB(kButtonAddrs[j], &offBit, 1);
       setButtonStatusLed(j, false);
@@ -2321,7 +2334,7 @@ void applyAckButtonUpdate(bool pressed) {
     }
 
     for (uint8_t j = 0; j < NS12::BUTTON_COUNT; j++) {
-      if (!mcpOutputState[j]) continue;
+      if (!buttonEnableState[j]) continue;
       bool offBit = false;
       ns12.sendWB(kButtonAddrs[j], &offBit, 1);
       setButtonStatusLed(j, false);
@@ -2385,7 +2398,7 @@ void applyDiagButtonUpdate(uint8_t i, bool pressed) {
   if (pressed && !wasPressed) {
     // These 28 buttons live on the TEST screen -- ignore presses while its
     // own enable toggle is off (screen is "just a display" until armed).
-    if (!mcpOutputState[BUTTON_TEST_INDEX]) {
+    if (!buttonEnableState[BUTTON_TEST_INDEX]) {
       Serial.printf("[HMI-DIAG] %s ($B%u) ignored -- TEST screen not enabled\n",
                     kDiagButtonNames[i], (unsigned)(NS12::DIAG_BUTTON_BASE_ADDR + i));
       return;
@@ -2555,14 +2568,18 @@ void servicePlcControl() {
 //
 // Separately, the HMI's own SETUP/ALARM LOG/TREND FULL/TEST/DIAG push-
 // buttons ($B30-$B34) are polled over NS12 RB (see serviceHmiButtonPolling()
-// below) and dispatch through handleHmiButtonPress() -- TEST and DIAG there
-// call the same pushTestPattern()/printDiagnostics() as 'M' and 'D' here.
-// PLC_CONTROL/PLC_STATUS (servicePlcControl(), above) are unrelated to any
-// of this -- the S7-315-2 PLC link, not the HMI.
+// below) and dispatch through handleHmiButtonPress() -- those 5 only log
+// and set their own Enable state now (see buttonEnableState[]'s comment),
+// no action side effects. PLC_CONTROL/PLC_STATUS (servicePlcControl(),
+// above) are unrelated to any of this -- the S7-315-2 PLC link, not the HMI.
 // =====================================================================
-// Boot-time visual/functional check of every MCP-driven status LED, one
-// at a time -- confirms all 7 are wired and addressed correctly without
-// waiting for a real button press or fault condition.
+// Visual/functional check of all 7 MCP-driven LEDs (ILED_R/G/B,
+// ELED_R/G/B/Y), one at a time -- every one of them is bench-test-only,
+// no fixed "meaning". Runs once at boot (confirms all 7 are wired and
+// addressed correctly without waiting for a real button press or fault
+// condition) and is also reachable any time after via the 'Y' serial/
+// diag command for troubleshooting -- see handleSerialCommand()'s case
+// 'Y' for why that's gated to Standby/FaultStop only.
 void scanMcpStatusLeds() {
   if (!mcpOk) return;
   static const uint8_t ledPins[] = {McpPin::ILED_R, McpPin::ILED_G, McpPin::ILED_B,
@@ -2573,9 +2590,9 @@ void scanMcpStatusLeds() {
 
   for (size_t i = 0; i < sizeof(ledPins) / sizeof(ledPins[0]); ++i) {
     Serial.printf("[SETUP] %s -> ON\n", ledNames[i]);
-    mcp.digitalWrite(ledPins[i], HIGH);
+    mcp.digitalWrite(ledPins[i], HIGH); // ledNames[i] (e.g. ILED_R) -> ON
     delay(250);
-    mcp.digitalWrite(ledPins[i], LOW);
+    mcp.digitalWrite(ledPins[i], LOW);  // ledNames[i] -> OFF before moving to the next LED
     delay(150);
   }
   Serial.println(F("[SETUP] MCP LED sweep complete."));
@@ -2583,14 +2600,14 @@ void scanMcpStatusLeds() {
 
 void handleSerialCommand(char c) {
   switch (c) {
-  case 'S': state = SystemState::Standby; break;
-  case 'W': state = SystemState::WaitingForTube; break;
-  case 'I': state = SystemState::InspectingTube; break;
-  case 'G': state = SystemState::TubeGap; break;
-  case 'F': enterFaultStop(); break;
-  case '1': case '2': case '3': case '4': case '5':
-  case '6': case '7': case '8': case '9': {
-    uint8_t idx = c - '1';
+  case 'S': state = SystemState::Standby; break;             // $B50 / lamp $B550 -- force state
+  case 'W': state = SystemState::WaitingForTube; break;      // $B51 / lamp $B551 -- force state
+  case 'I': state = SystemState::InspectingTube; break;      // $B52 / lamp $B552 -- force state
+  case 'G': state = SystemState::TubeGap; break;              // $B53 / lamp $B553 -- force state
+  case 'F': enterFaultStop(); break;                          // $B54 / lamp $B554 -- force state
+  case '1': case '2': case '3': case '4': case '5':           // $B55-$B59 / lamp $B555-$B559
+  case '6': case '7': case '8': case '9': {                   // $B60-$B63 / lamp $B560-$B563
+    uint8_t idx = c - '1'; // IO1-IO9 -- kMcpOutputPins[0-6] are the 7 LEDs, [7-8] are OPTO_1/2
 
     if (mcpOk) {
       toggleMcpOutput(idx);
@@ -2599,7 +2616,7 @@ void handleSerialCommand(char c) {
     }
     break;
   }
-  case 'A': {
+  case 'A': { // $B64 / lamp $B564 -- "Test #10" / YEL_LED_TEST (panel button 10)
     // Was an ESP_OPTO_3 toggle -- no longer safe now that pin is a live
     // TO_PLC_COMM bit, not a free test output. Panel button 10 (was
     // "OPTO3") is repurposed as a Yellow LED test instead.
@@ -2607,11 +2624,27 @@ void handleSerialCommand(char c) {
     Serial.printf("[IO-TEST] ELED_Y -> %s\n", mcpOutputState[6] ? "HIGH" : "LOW");
     break;
   }
-  case 'K':
+  // Not a diag-button command -- on-demand troubleshooting sweep of all 7
+  // MCP LEDs (ILED_R/G/B, ELED_R/G/B/Y), all bench-test-only per the user.
+  // Same routine setup() runs once at boot; here it's repeatable any time
+  // it's safe (blocks ~2.8s on delay(), so refused outside Standby/
+  // FaultStop -- would eat real-time budget mid-tube-pass otherwise).
+  // Leaves each LED LOW when done, which can desync it from whatever a
+  // SETUP-group Enable toggle (kMcpOutputPins[0..4] shares these same
+  // pins) had it set to -- re-press that screen's Enable button to
+  // resync the physical LED if so.
+  case 'Y':
+    if (state == SystemState::Standby || state == SystemState::FaultStop) {
+      scanMcpStatusLeds();
+    } else {
+      Serial.println(F("[SETUP] LED sweep refused -- only safe during Standby/FaultStop."));
+    }
+    break;
+  case 'K':                                                   // $B65 / lamp $B565
     keyenceTrigger.fire();
     Serial.println(F("[IO-TEST] Keyence trigger pulse fired (GPIO1)."));
     break;
-  case 'P': {
+  case 'P': { // $B66 / lamp $B566
     static const char *kStatusNames[4] = {"STOP", "ALARM", "WARNING", "READY"};
     uint8_t nextCode = (static_cast<uint8_t>(plcLastCommandedStatus) + 1) % 4;
     plcLastCommandedStatus = static_cast<PlcComms::PlcStatus>(nextCode);
@@ -2619,14 +2652,14 @@ void handleSerialCommand(char c) {
     Serial.printf("[PLC] PLC_STATUS -> %u (%s)\n", nextCode, kStatusNames[nextCode]);
     break;
   }
-  case 'M':
+  case 'M':                                                   // $B67 / lamp $B567
     pushTestPattern();
     break;
-  case 'C':
+  case 'C':                                                   // $B68 / lamp $B568
     capture.rearm();
     Serial.println(F("[DIAG] Capture forced/rearmed."));
     break;
-  case 'B':
+  case 'B': // $B69 / lamp $B569
 
     if (!rawBaselineCaptureInProgress) {
       startRawBaselineCapture();
@@ -2634,7 +2667,7 @@ void handleSerialCommand(char c) {
       Serial.println(F("[DIAG] Baseline capture already in progress."));
     }
     break;
-  case 'X': {
+  case 'X': { // $B70 / lamp $B570
     Serial.println(F("[DIAG] Frame dump: raw-delta (live pipeline) vs calibrated C (one-off"));
     Serial.println(F("       mlx.getFrame() snapshot, for correlating real thresholds):"));
 
@@ -2658,7 +2691,7 @@ void handleSerialCommand(char c) {
     }
     break;
   }
-  case 'R': {
+  case 'R': { // $B71 / lamp $B571
     capture.rearm();
     float blankFrame[StripZone::COLS * StripZone::ROWS];
 
@@ -2669,10 +2702,10 @@ void handleSerialCommand(char c) {
     Serial.println(F("[DIAG] Rearmed, display cleared."));
     break;
   }
-  case 'D':
+  case 'D':                                                   // $B72 / lamp $B572
     printDiagnostics();
     break;
-  case 'L':
+  case 'L':                                                   // $B77 / lamp $B577
     continuousMlxTestMode = !continuousMlxTestMode;
     Serial.printf("[MLX-LIVE] continuous reading %s%s\n",
                   continuousMlxTestMode ? "ON" : "OFF",
@@ -2680,20 +2713,20 @@ void handleSerialCommand(char c) {
                       ? " (WARNING: no baseline yet -- send 'B' first)"
                       : "");
     break;
-  case 'H':
+  case 'H':                                                   // $B73 / lamp $B573
     burstProbeUntilMs = millis() + BURST_PROBE_DURATION_MS;
     Serial.printf("[HMI-PROBE] Burst mode ON for %lu ms -- hold any HMI button NOW, watch for "
                   "[NS12-FRAME]/[HMI-RAW] lines on its address.\n",
                   (unsigned long)BURST_PROBE_DURATION_MS);
     break;
 #if NS12_ENABLE_RM_POLLING
-  case 'V':
+  case 'V':                                                   // $B74 / lamp $B574
     wordVerifyIndex = 0;
     Serial.println(F("[WORD-VERIFY] Reading $W30..$W34 via RM (confirmed-correct word path) -- "
                       "compare against the RB [HMI-RAW] values for $B30..$B34."));
     break;
 #endif
-  case 'J': {
+  case 'J': { // $B75 / lamp $B575
     bool oneBit = true;
     ns12.sendWB(NS12::BUTTON_SETUP_ADDR, &oneBit, 1);
     burstProbeUntilMs = millis() + 4000;
@@ -2702,7 +2735,7 @@ void handleSerialCommand(char c) {
     break;
   }
 #if NS12_ENABLE_RM_POLLING
-  case 'N': {
+  case 'N': { // $B76 / lamp $B576
     bool oneBit = true;
     ns12.sendWB(NS12::BUTTON_SETUP_ADDR, &oneBit, 1);
     noOffsetTestAddr = NS12::BUTTON_SETUP_ADDR;
