@@ -42,6 +42,10 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V4.15.73** -- Added trailing `// ledPin -> ON/OFF` comments on the
+  actual `digitalWrite`/`mcp.digitalWrite` calls for the test LEDs
+  (`scanMcpStatusLeds()`'s sweep loop, `toggleMcpOutput()`), per the
+  user's clarification of the earlier address-comment request.
 - **V4.15.72** -- All 7 MCP LEDs are bench-test-only per the user (no
   fixed meaning), so added `case 'Y'` to `handleSerialCommand()`: runs
   `scanMcpStatusLeds()` (previously boot-only) on demand for
