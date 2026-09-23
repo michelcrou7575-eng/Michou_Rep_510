@@ -42,6 +42,18 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V4.15.72** -- All 7 MCP LEDs are bench-test-only per the user (no
+  fixed meaning), so added `case 'Y'` to `handleSerialCommand()`: runs
+  `scanMcpStatusLeds()` (previously boot-only) on demand for
+  troubleshooting. Gated to `Standby`/`FaultStop` only -- it blocks
+  ~2.8s on `delay()`, which would eat real-time budget mid-tube-pass.
+  Note in code: it leaves each LED LOW when done, which can desync the
+  physical LED from whatever a SETUP-group Enable toggle last set it to
+  (they share `kMcpOutputPins[0..4]`) -- re-press that screen's Enable
+  button to resync. Also added a `$B<addr> / lamp $B<addr>` comment on
+  every `case` in `handleSerialCommand()` per the user's request, and
+  fixed a stale comment above `scanMcpStatusLeds()` that still described
+  the TEST/DIAG one-shot side effects removed in V4.15.69.
 - **V4.15.71** -- **Root-cause fix** for the "$B43 not following $B33" /
   "IO4 affects TEST" reports: the 5 SETUP-group screen-Enable buttons and
   the 9 numbered IO-test toggles ('1'-'9' on the TEST screen) were both
