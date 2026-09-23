@@ -42,6 +42,24 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V4.15.71** -- **Root-cause fix** for the "$B43 not following $B33" /
+  "IO4 affects TEST" reports: the 5 SETUP-group screen-Enable buttons and
+  the 9 numbered IO-test toggles ('1'-'9' on the TEST screen) were both
+  reading/writing `mcpOutputState[0..4]` -- same array, overlapping
+  indices, two unrelated features. Pressing IO1-IO5 (`toggleMcpOutput()`)
+  silently flipped the exact slots `setButtonStatusLed()`/
+  `applyButtonBitUpdate()`/`BUTTON_TEST_INDEX`'s gate/`applyAckButtonUpdate()`
+  read as "is SETUP/ALARM_LOG/TREND_FULL/TEST/DIAG armed", corrupting the
+  screen-enable state and desyncing the `$B4x` lamps from it. Added a
+  separate `buttonEnableState[NS12::BUTTON_COUNT]` array for the
+  SETUP-group only; `mcpOutputState[9]` is now exclusively the numbered
+  IO-test toggles' state. The physical LED confirmation still shares
+  `kMcpOutputPins[0..4]` with those same IO tests (same enclosure LEDs) --
+  that pin-sharing is unchanged and intentional, only the logical state
+  that drives the `$B4x` lamp and the enable gate is now independent of
+  it. Also dropped `toggleButtonStatusLed()`'s stale `!mcpOk` early-return,
+  which had been silently undoing V4.15.66's "send the lamp even if MCP
+  is down" fix.
 - **V4.15.70** -- `printDiagnostics()` now prints each SETUP-group
   button's current Enable state by name (`mcpOutputState[0..4]`,
   `$B30-34`), to help debug a reported problem with those toggles from
