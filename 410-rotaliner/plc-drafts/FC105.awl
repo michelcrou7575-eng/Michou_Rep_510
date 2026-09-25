@@ -1,0 +1,127 @@
+FUNCTION FC 105 : VOID
+TITLE =Glue Scale Logic
+//DRAFT -- not verified against the real HMI DB10 layout, hardware
+//config, or the SIMATIC Manager project. Syntax-check and compile
+//here before downloading. See FC105_design.md in this folder for
+//rationale, including an open question about whether "FC105" here
+//is meant to be Siemens' standard SCALE library block or a custom
+//function like the one drafted below (this draft assumes custom, and
+//does its own scaling math inline either way, to avoid depending on
+//or colliding with whatever FC105 actually is in the standard-library
+//sense).
+//
+//DB10's symbol-table name is "HMI DB10" -- STL addressing below still
+//uses the absolute DB10.DBx form regardless of that symbolic name.
+//
+//Call from OB1 (not OB35) -- this block makes the actual QC decision
+//(Setpoint clamp, out-of-tolerance test), so it should run on the
+//main scan, not a slower time-driven OB like FC160's HMI formatting.
+//
+//Assumed HMI DB10 layout used here (PROPOSAL -- reconcile against the
+//real DB; extends FC160_design.md's layout without overlapping it):
+//  DBD 0    GlueSetpoint         REAL   TP177A writes it, FC105 clamps it
+//  DBD 4    GlueActualValue      REAL   written by FC105
+//  DBD 14   GlueDeviation        REAL   written by FC105
+//  DBX 8.0  GlueOutOfTolerance   BOOL   written by FC105 (FC160 only relays it)
+//
+//PLACEHOLDERS below need real values -- see FC105_design.md:
+//  raw analog input address, raw signal range, engineering-unit range,
+//  Setpoint MIN/MAX, tolerance band.
+
+VAR_TEMP
+  RawReal : REAL;
+  AboveHigh : BOOL;
+  BelowLow : BOOL;
+  HighLimit : REAL;
+  LowLimit : REAL;
+END_VAR
+
+BEGIN
+
+NETWORK
+TITLE =Scale the raw glue-scale analog input into GlueActualValue
+//PLACEHOLDER: PIW 288 is a stand-in for wherever the glue scale's
+//analog input module actually lives in HW Config.
+//PLACEHOLDER: -27648.0 / 55296.0 assume the standard S7-300 bipolar
+//full-scale raw range (RawLO=-27648, RawHI-RawLO=55296) -- confirm
+//against the real module type and its wiring/measuring range.
+//PLACEHOLDER: 0.0 / 100.0 are the assumed engineering-unit floor and
+//span -- replace with the glue scale's real range and units.
+      L     PIW   288
+      ITD
+      DTR
+      T     #RawReal
+
+      L     #RawReal
+      L     -27648.0
+      -R
+      L     55296.0
+      /R
+      L     100.0
+      *R
+      L     0.0
+      +R
+      T     DB10.DBD    4      //GlueActualValue
+
+NETWORK
+TITLE =Clamp the operator-entered Setpoint to a safe range
+//PLACEHOLDER: 0.0 / 100.0 are the assumed Setpoint MIN/MAX -- replace
+//with the real safe operating range.
+      L     DB10.DBD    0      //GlueSetpoint, as entered via the TP177A
+      L     0.0                //SP_MIN
+      <R
+      JC    SPLO
+
+      L     DB10.DBD    0
+      L     100.0              //SP_MAX
+      >R
+      JC    SPHI
+      JU    SPOK
+
+SPLO: L     0.0                //SP_MIN
+      T     DB10.DBD    0
+      JU    SPOK
+
+SPHI: L     100.0              //SP_MAX
+      T     DB10.DBD    0
+
+SPOK: NOP   0
+
+NETWORK
+TITLE =Deviation (Actual - Setpoint), for trending/display
+      L     DB10.DBD    4      //GlueActualValue
+      L     DB10.DBD    0      //GlueSetpoint (already clamped above)
+      -R
+      T     DB10.DBD   14      //GlueDeviation
+
+NETWORK
+TITLE =Out-of-tolerance decision -- FC105 owns this, FC160 only relays it
+//PLACEHOLDER: 5.0 is the assumed tolerance band in engineering units.
+//Each comparison is assigned to its own temp bit and combined
+//afterward with a plain U/O, rather than chaining O directly off a
+//comparison's RLO -- easier to verify by eye and in the compiler.
+      L     DB10.DBD    0      //GlueSetpoint
+      L     5.0                //ToleranceBand
+      +R
+      T     #HighLimit
+
+      L     DB10.DBD    0      //GlueSetpoint
+      L     5.0                //ToleranceBand
+      -R
+      T     #LowLimit
+
+      L     DB10.DBD    4      //GlueActualValue
+      L     #HighLimit
+      >R
+      =     #AboveHigh
+
+      L     DB10.DBD    4
+      L     #LowLimit
+      <R
+      =     #BelowLow
+
+      U     #AboveHigh
+      O     #BelowLow
+      =     DB10.DBX    8.0    //GlueOutOfTolerance
+
+END_FUNCTION
