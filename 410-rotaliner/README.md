@@ -60,21 +60,25 @@ not directly wired I/O.
 
 | Block | Role | Status |
 |---|---|---|
-| DB10 | HMI DB — data carried to/from the TP177A | Added |
-| FC160 | HMI Process — formats/relays DB10 for the TP177A over Profibus | Added; draft implementation in [`plc-drafts/FC160.awl`](plc-drafts/FC160.awl) + [`plc-drafts/FC160_design.md`](plc-drafts/FC160_design.md), not yet verified against the real project |
+| HMI DB10 | Data carried to/from the TP177A | Added |
+| FC160 | HMI Process — formats/relays HMI DB10 for the TP177A over Profibus | Added; draft implementation in [`plc-drafts/FC160.awl`](plc-drafts/FC160.awl) + [`plc-drafts/FC160_design.md`](plc-drafts/FC160_design.md), not yet verified against the real project |
 | FC105 | Glue Scale Logic — glue-scale setpoint vs. actual value | Referenced, not yet confirmed added |
-| Banner Auto-Trim | External device/station whose data needs to reach the HMI | Not a PLC block — an external source writing into DB10 |
+| Banner Auto-Trim | External device/station whose data needs to reach the HMI | Not a PLC block — an external source writing into HMI DB10 |
+
+Note: the DB's symbol-table name is **"HMI DB10"** (DB number 10) — STL
+addressing still uses the absolute form `DB10.DBx...` regardless of the
+symbolic name, so code snippets below say `DB10`, prose says "HMI DB10".
 
 Confirmed data flow — FC160 does not poll; FC105 and Banner Auto-Trim write
-into DB10 directly, and FC160 only formats what's already there for the
+into HMI DB10 directly, and FC160 only formats what's already there for the
 TP177A:
 
 ```
-FC105 (Glue Scale Logic)  --writes Setpoint, Actual Value-->  DB10
-Banner Auto-Trim          --writes (info TBD)------------->  DB10
+FC105 (Glue Scale Logic)  --writes Setpoint, Actual Value-->  HMI DB10
+Banner Auto-Trim          --writes (info TBD)------------->  HMI DB10
                                                                 |
                                                     FC160 (HMI Process)
-                                                    formats DB10 for the TP177A
+                                                    formats HMI DB10 for the TP177A
 ```
 
 ## Open questions (block this being made concrete)
@@ -82,13 +86,13 @@ Banner Auto-Trim          --writes (info TBD)------------->  DB10
 - **FC105 interface**: what DB/tags hold Setpoint and Actual Value today,
   and what data type (INT, REAL, scaled integer)? Does FC105 already exist
   as a block, or is it planned?
-- **DB10 layout**: which offsets/tags are reserved for the glue-scale
-  setpoint/actual pair vs. Banner Auto-Trim data? Is DB10 already
+- **HMI DB10 layout**: which offsets/tags are reserved for the glue-scale
+  setpoint/actual pair vs. Banner Auto-Trim data? Is HMI DB10 already
   structured for this, or does it need new members added?
 - **Banner Auto-Trim**: what is it exactly (Banner Engineering sensor,
   a trim/cutoff station, something else), and what's its physical/logical
   interface to the S7-315-2 — discrete I/O, analog, or a fieldbus/serial
-  link? What specific values ("info") does it need to write into DB10?
+  link? What specific values ("info") does it need to write into HMI DB10?
 - **Glue InFeed / Glue Selection / Hot Water Supply**: how does the
   S7-315-2 actually monitor/control each of these (I/O points, setpoints,
   what "quality control" check is being added for each)? Not yet
@@ -96,7 +100,7 @@ Banner Auto-Trim          --writes (info TBD)------------->  DB10
 - **ATmega2560 <-> CP340 link**: what protocol/frame format does the
   ATmega2560 send over RS232 (baud rate, framing, message content), and
   which FC/DB in the S7-315-2 program reads the CP340 and turns that into
-  the Rotaliner seal-seam data eventually surfaced via FC160/DB10?
+  the Rotaliner seal-seam data eventually surfaced via FC160/HMI DB10?
 
 These need answering (from the SIMATIC Manager project / the actual
 hardware) before this can move from "tracked requirement" to real block

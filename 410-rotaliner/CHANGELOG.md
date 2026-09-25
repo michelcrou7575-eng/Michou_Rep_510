@@ -8,20 +8,20 @@ log only.
 
 ## 2026-09-25
 
-- **DB10 (HMI DB)** added — data block carrying the operator-HMI-facing
+- **HMI DB10** added — data block carrying the operator-HMI-facing
   values for this line.
 - **FC160** added — function block. Confirmed purpose: **HMI Process** —
-  the block that formats/relays DB10 for the operator HMI.
+  the block that formats/relays HMI DB10 for the operator HMI.
 - **FC105 (Glue Scale Logic)** — needs to work with FC160: writes
-  **Setpoint** and **Actual Value** data into DB10 (glue-scale target vs.
+  **Setpoint** and **Actual Value** data into HMI DB10 (glue-scale target vs.
   measured reading, surfaced to the operator via FC160).
 - **Banner Auto-Trim** needs to relay its info through the same path —
-  writes into DB10 as well, so FC160 is the common HMI-facing formatter for
+  writes into HMI DB10 as well, so FC160 is the common HMI-facing formatter for
   glue-scale data (via FC105) and Banner Auto-Trim data alike, not just one
   or the other.
 - **Confirmed: FC160 does not poll FC105 or Banner Auto-Trim.** Both write
-  into DB10 directly; FC160 only formats whatever is already there for the
-  HMI.
+  into HMI DB10 directly; FC160 only formats whatever is already there for
+  the HMI.
 - **System context recorded**: the 410 Tuber (paper rolls -> layered,
   glue-sealed tube via the Rotaliner polyethylene seal seam) feeds the 510
   Bottomer (forms bottoms with hot-melt glue, inspected separately by
@@ -32,13 +32,13 @@ log only.
   Rotaliner polyethylene seal seam, and Hot Water Supply (cleaning) — QC
   the original machine lacks. A **Siemens TP177A** HMI is being added to
   the Profibus network for status display and setpoint entry, driven by
-  FC160/DB10.
+  FC160/HMI DB10.
 - **ATmega2560 role confirmed**: it's an "intelligent" sensor on the
   Rotaliner seal seam, linked to the S7-315-2 over RS232 through a
   **Siemens CP340** point-to-point communication processor module — not
   direct wired I/O.
 
 See `README.md` for the block interface table, data flow, and remaining
-open questions (DB10 layout, FC105 tag addresses, Banner Auto-Trim's
+open questions (HMI DB10 layout, FC105 tag addresses, Banner Auto-Trim's
 interface, ATmega2560/CP340 protocol) blocking an implementable version of
 this.

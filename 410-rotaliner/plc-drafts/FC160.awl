@@ -1,16 +1,20 @@
 FUNCTION FC 160 : VOID
 TITLE =HMI Process
-//DRAFT -- not verified against the real DB10 layout or the SIMATIC
-//Manager project. Syntax-check and compile here before downloading.
-//See FC160_design.md in this folder for rationale and the open
-//question about whether the TP177A reads DB10's raw addresses
-//directly or a separate HMI region like the one assumed below.
+//DRAFT -- not verified against the real HMI DB10 layout or the
+//SIMATIC Manager project. Syntax-check and compile here before
+//downloading. See FC160_design.md in this folder for rationale and
+//the open question about whether the TP177A reads HMI DB10's raw
+//addresses directly or a separate HMI region like the one assumed
+//below.
+//
+//DB10's symbol-table name is "HMI DB10" -- STL addressing below still
+//uses the absolute DB10.DBx form regardless of that symbolic name.
 //
 //Call from OB35 (time-driven, ~100ms), not OB1 -- HMI formatting has
 //no reason to compete with time-critical Tuber control logic in the
 //main scan cycle.
 //
-//Assumed DB10 layout (PROPOSAL -- reconcile against the real DB10):
+//Assumed HMI DB10 layout (PROPOSAL -- reconcile against the real DB):
 //  DBD 0    GlueSetpoint         REAL   written by FC105
 //  DBD 4    GlueActualValue      REAL   written by FC105
 //  DBX 8.0  GlueOutOfTolerance   BOOL   written by FC105

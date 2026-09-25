@@ -1,6 +1,6 @@
 # FC160 (HMI Process) — draft design
 
-**Status: draft, not verified against the real DB10 layout or SIMATIC
+**Status: draft, not verified against the real HMI DB10 layout or SIMATIC
 Manager project. Syntax-check/compile in SIMATIC Manager before downloading
 anything to the S7-315-2.** This repo has no access to the actual STEP 7
 source, so everything below is a proposal to react to, not a known-good
@@ -8,18 +8,18 @@ implementation.
 
 ## Scope, per what's confirmed so far
 
-FC160 is the HMI Process block: it **formats/relays DB10 for the TP177A**.
+FC160 is the HMI Process block: it **formats/relays HMI DB10 for the TP177A**.
 It does **not** poll FC105 or Banner Auto-Trim, and it should **not**
 compute glue-scale tolerance/alarm logic — that's FC105's job ("Glue Scale
 Logic"). Blurring that boundary is the main design mistake to avoid here:
-if FC160 starts computing things, DB10 stops being a clean record of
+if FC160 starts computing things, HMI DB10 stops being a clean record of
 "what FC105/Banner Auto-Trim decided" and becomes two blocks fighting over
 the same data.
 
 Given that, FC160's actual job is narrower than "process" suggests:
 
 1. Pack whatever status/fault bits FC105 and Banner Auto-Trim already wrote
-   into DB10 into one compact **HMI status word**, for a single word-lamp /
+   into HMI DB10 into one compact **HMI status word**, for a single word-lamp /
    multi-state screen object rather than wiring N separate bit lamps.
 2. Drive a **heartbeat counter** so the TP177A can show a live
    "PLC communication OK" indicator (increments every FC160 call; the HMI
@@ -41,11 +41,11 @@ OB1. Reasons:
 - If OB35 isn't already configured/enabled in the hardware station, that's
   a one-time addition in SIMATIC Manager's HW Config.
 
-## Proposed DB10 additions
+## Proposed HMI DB10 additions
 
-DB10 already exists ("Added" per the changelog) with whatever FC105 needs
+HMI DB10 already exists ("Added" per the changelog) with whatever FC105 needs
 for Setpoint/Actual Value. The offsets below are a **proposal for what
-FC160 reads and writes** — reconcile against DB10's real declaration in
+FC160 reads and writes** — reconcile against HMI DB10's real declaration in
 SIMATIC Manager before using these addresses for anything:
 
 | Offset | Name | Type | Written by | Purpose |
@@ -65,7 +65,7 @@ populates?** The draft below assumes the latter (a small dedicated
 HMI_StatusWord/HMI_Heartbeat area) because it's the more common,
 screen-design-friendly pattern — the HMI configuration in ProTool/WinCC
 flexible can then stay stable even if FC105's internal layout changes
-later. If your TP177A screens already read DB10's raw addresses directly,
+later. If your TP177A screens already read HMI DB10's raw addresses directly,
 FC160 may only need the heartbeat — tell me and I'll trim this down.
 
 ## FC160.awl
