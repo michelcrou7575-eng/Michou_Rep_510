@@ -7,13 +7,13 @@ inspection system in `src/` at the repo root). Do not conflate the two:
 |---|---|---|
 | Location | Factory floor | Home-lab / after-hours |
 | Controller | Siemens S7-300 + ATmega2560 | ESP32-S3 |
-| Toolchain | TIA Portal / STEP 7 | PlatformIO / Arduino |
+| Toolchain | **SIMATIC Manager / STEP 7 (classic V5.x)** — not TIA Portal | PlatformIO / Arduino |
 | Purpose | Tubing seal seam monitoring | Hot-melt glue QC on tubes |
 
 This directory holds tracking notes for the 410 Rotaliner project only —
-the actual TIA Portal source (DB/FC blocks, ATmega2560 firmware) lives in
-its own project on the factory-floor toolchain, not in this repo. This is
-a changelog/reference, not a build target.
+the actual STEP 7 source (DB/FC blocks, ATmega2560 firmware) lives in its
+own project in SIMATIC Manager on the factory-floor toolchain, not in this
+repo. This is a changelog/reference, not a build target.
 
 See `CHANGELOG.md` for the block-level history.
 
@@ -36,6 +36,18 @@ Banner Auto-Trim          --(info TBD)------------->  FC160 (HMI Process)  -->  
 FC160 is meant to be the common HMI-facing path for both glue-scale data and
 Banner Auto-Trim data, not a path dedicated to just one of them.
 
+**Confirmed: FC160 does not poll.** FC105 (and Banner Auto-Trim) write into
+DB10 directly; FC160's job is only to format/relay whatever is already
+sitting in DB10 for the HMI. Revised data flow:
+
+```
+FC105 (Glue Scale Logic)  --writes Setpoint, Actual Value-->  DB10
+Banner Auto-Trim          --writes (info TBD)------------->  DB10
+                                                                |
+                                                    FC160 (HMI Process)
+                                                    formats DB10 for the HMI
+```
+
 ### Open questions (block this being made concrete)
 
 - **FC105 interface**: what DB/tags hold Setpoint and Actual Value today,
@@ -47,11 +59,8 @@ Banner Auto-Trim data, not a path dedicated to just one of them.
 - **Banner Auto-Trim**: what is it exactly (Banner Engineering sensor,
   a trim/cutoff station, something else), and what's its physical/logical
   interface to the S7-300 — discrete I/O, analog, or a fieldbus/serial
-  link? What specific values ("info") does it need to relay through FC160?
-- Is FC160 expected to *poll* FC105 and Banner Auto-Trim data each scan, or
-  are they expected to write into DB10 directly and FC160 only formats it
-  for the HMI?
+  link? What specific values ("info") does it need to write into DB10?
 
-These need answering (from the TIA Portal project / the actual hardware)
-before this can move from "tracked requirement" to real block logic — this
-repo doesn't have STEP 7 source to check against.
+These need answering (from the SIMATIC Manager project / the actual
+hardware) before this can move from "tracked requirement" to real block
+logic — this repo doesn't have STEP 7 source to check against.
