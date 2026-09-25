@@ -1,8 +1,12 @@
 # TGIS-510 — Thermal Glue Inspection System
 
-Home-lab / after-hours project. **Separate from the 410 Rotaliner Tubing
-Seal Seam Monitor** (factory floor, S7-300/ATmega2560) — not related. This
-repo also tracks that project's changelog, kept isolated in
+Home-lab / after-hours project. **Separate codebase from the 410 Rotaliner
+Tubing Seal Seam Monitor** (factory floor, auxiliary Siemens S7-315-2 +
+SIMATIC Manager) — do not conflate the two firmware/PLC projects, even
+though the machines are related: the 410 Tuber (which 410 Rotaliner adds QC
+to) feeds tubes into the 510 Bottomer (which this TGIS-510 project
+inspects), two sequential stations on the same line. This repo also tracks
+the 410 project's changelog, kept isolated in
 [`410-rotaliner/`](410-rotaliner/) — nothing in that directory is part of
 the TGIS-510 firmware below.
 

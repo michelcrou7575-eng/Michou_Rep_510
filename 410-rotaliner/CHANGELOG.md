@@ -26,3 +26,15 @@ log only.
 See `README.md` for the block interface table, data flow, and remaining
 open questions (DB10 layout, FC105 tag addresses, Banner Auto-Trim's actual
 interface) blocking an implementable version of this.
+
+- **System context recorded**: the 410 Tuber (paper rolls -> layered,
+  glue-sealed tube via the Rotaliner polyethylene seal seam) feeds the 510
+  Bottomer (forms bottoms with hot-melt glue, inspected separately by
+  TGIS-510) — two different machines in sequence, each with its own
+  after-the-fact QC add-on.
+- Confirmed hardware: an auxiliary **Siemens S7-315-2** PLC is being added
+  to the Tuber to monitor/control Glue InFeed, Glue Selection, the
+  Rotaliner polyethylene seal seam, and Hot Water Supply (cleaning) — QC
+  the original machine lacks. A **Siemens TP177A** HMI is being added to
+  the Profibus network for status display and setpoint entry, driven by
+  FC160/DB10.
