@@ -35,10 +35,10 @@ log only.
   FC160/DB10.
 - **ATmega2560 role confirmed**: it's an "intelligent" sensor on the
   Rotaliner seal seam, linked to the S7-315-2 over RS232 through a
-  **Siemens CP240** point-to-point communication processor module — not
+  **Siemens CP340** point-to-point communication processor module — not
   direct wired I/O.
 
 See `README.md` for the block interface table, data flow, and remaining
 open questions (DB10 layout, FC105 tag addresses, Banner Auto-Trim's
-interface, ATmega2560/CP240 protocol) blocking an implementable version of
+interface, ATmega2560/CP340 protocol) blocking an implementable version of
 this.
