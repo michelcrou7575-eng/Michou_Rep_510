@@ -15,9 +15,9 @@ TITLE =HMI Process
 //main scan cycle.
 //
 //Assumed HMI DB10 layout (PROPOSAL -- reconcile against the real DB):
-//  DBD 0    GlueSetpoint         REAL   written by FC105
-//  DBD 4    GlueActualValue      REAL   written by FC105
-//  DBX 8.0  GlueOutOfTolerance   BOOL   written by FC105
+//  DBD 0    GlueSetpoint         REAL   written by FC155
+//  DBD 4    GlueActualValue      REAL   written by FC155
+//  DBX 8.0  GlueOutOfTolerance   BOOL   written by FC155
 //  DBX 8.1  BannerAutoTrimFault  BOOL   written by Banner Auto-Trim interface
 //  DBW 10   HMI_StatusWord       WORD   written by FC160 (this block)
 //  DBW 12   HMI_Heartbeat        WORD   written by FC160 (this block)
@@ -38,7 +38,7 @@ TITLE =Pack scattered status/fault bits into one HMI status word
 //Each source bit is assigned individually rather than combined with
 //O/A chained directly onto a comparison result, to keep this easy to
 //verify by eye and in the SIMATIC Manager compiler.
-      U     DB10.DBX   8.0     //GlueOutOfTolerance (set by FC105)
+      U     DB10.DBX   8.0     //GlueOutOfTolerance (set by FC155)
       =     DB10.DBX  10.0     //HMI_StatusWord bit 0
 
       U     DB10.DBX   8.1     //BannerAutoTrimFault

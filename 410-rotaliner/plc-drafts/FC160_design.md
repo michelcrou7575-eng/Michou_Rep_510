@@ -9,23 +9,23 @@ implementation.
 ## Scope, per what's confirmed so far
 
 FC160 is the HMI Process block: it **formats/relays HMI DB10 for the TP177A**.
-It does **not** poll FC105 or Banner Auto-Trim, and it should **not**
-compute glue-scale tolerance/alarm logic — that's FC105's job ("Glue Scale
+It does **not** poll FC155 or Banner Auto-Trim, and it should **not**
+compute glue-scale tolerance/alarm logic — that's FC155's job ("Glue Scale
 Logic"). Blurring that boundary is the main design mistake to avoid here:
 if FC160 starts computing things, HMI DB10 stops being a clean record of
-"what FC105/Banner Auto-Trim decided" and becomes two blocks fighting over
+"what FC155/Banner Auto-Trim decided" and becomes two blocks fighting over
 the same data.
 
 Given that, FC160's actual job is narrower than "process" suggests:
 
-1. Pack whatever status/fault bits FC105 and Banner Auto-Trim already wrote
+1. Pack whatever status/fault bits FC155 and Banner Auto-Trim already wrote
    into HMI DB10 into one compact **HMI status word**, for a single word-lamp /
    multi-state screen object rather than wiring N separate bit lamps.
 2. Drive a **heartbeat counter** so the TP177A can show a live
    "PLC communication OK" indicator (increments every FC160 call; the HMI
    watches for it changing, not for a specific value).
 3. Convert/scale values only if the TP177A's screen objects need a
-   different representation than what FC105 wrote (see open question
+   different representation than what FC155 wrote (see open question
    below) — e.g. a REAL engineering value where the panel's tag is
    configured as a scaled INT for a bargraph.
 
@@ -43,28 +43,28 @@ OB1. Reasons:
 
 ## Proposed HMI DB10 additions
 
-HMI DB10 already exists ("Added" per the changelog) with whatever FC105 needs
+HMI DB10 already exists ("Added" per the changelog) with whatever FC155 needs
 for Setpoint/Actual Value. The offsets below are a **proposal for what
 FC160 reads and writes** — reconcile against HMI DB10's real declaration in
 SIMATIC Manager before using these addresses for anything:
 
 | Offset | Name | Type | Written by | Purpose |
 |---|---|---|---|---|
-| DBD 0 | GlueSetpoint | REAL | FC105 | Glue-scale target |
-| DBD 4 | GlueActualValue | REAL | FC105 | Glue-scale measured reading |
-| DBX 8.0 | GlueOutOfTolerance | BOOL | FC105 | Actual vs. Setpoint alarm (FC105's decision, not FC160's) |
+| DBD 0 | GlueSetpoint | REAL | FC155 | Glue-scale target |
+| DBD 4 | GlueActualValue | REAL | FC155 | Glue-scale measured reading |
+| DBX 8.0 | GlueOutOfTolerance | BOOL | FC155 | Actual vs. Setpoint alarm (FC155's decision, not FC160's) |
 | DBX 8.1 | BannerAutoTrimFault | BOOL | Banner Auto-Trim interface | Placeholder — real bit(s) TBD |
 | DBW 10 | HMI_StatusWord | WORD | **FC160** | Packed status bits for one HMI screen object |
 | DBW 12 | HMI_Heartbeat | WORD | **FC160** | Free-running counter, "PLC alive" on the TP177A |
 
 ## Open question this can't resolve without the real project
 
-**Does the TP177A's tag configuration point directly at FC105's raw
+**Does the TP177A's tag configuration point directly at FC155's raw
 addresses (DBD0/DBD4/DBX8.x), or at a separate HMI-only region that FC160
 populates?** The draft below assumes the latter (a small dedicated
 HMI_StatusWord/HMI_Heartbeat area) because it's the more common,
 screen-design-friendly pattern — the HMI configuration in ProTool/WinCC
-flexible can then stay stable even if FC105's internal layout changes
+flexible can then stay stable even if FC155's internal layout changes
 later. If your TP177A screens already read HMI DB10's raw addresses directly,
 FC160 may only need the heartbeat — tell me and I'll trim this down.
 

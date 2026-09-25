@@ -62,19 +62,19 @@ not directly wired I/O.
 |---|---|---|
 | HMI DB10 | Data carried to/from the TP177A | Added |
 | FC160 | HMI Process — formats/relays HMI DB10 for the TP177A over Profibus | Added; draft implementation in [`plc-drafts/FC160.awl`](plc-drafts/FC160.awl) + [`plc-drafts/FC160_design.md`](plc-drafts/FC160_design.md), not yet verified against the real project |
-| FC105 | Glue Scale Logic — glue-scale setpoint vs. actual value | Referenced, not yet confirmed added; draft implementation in [`plc-drafts/FC105.awl`](plc-drafts/FC105.awl) + [`plc-drafts/FC105_design.md`](plc-drafts/FC105_design.md), not yet verified against the real project (also flags a naming ambiguity: FC105 is Siemens' standard-library SCALE block number — see that design doc) |
+| FC155 | Glue Scale Logic — glue-scale setpoint vs. actual value | Referenced, not yet confirmed added; draft implementation in [`plc-drafts/FC155.awl`](plc-drafts/FC155.awl) + [`plc-drafts/FC155_design.md`](plc-drafts/FC155_design.md), not yet verified against the real project. Deliberately numbered FC155, not FC105 — FC105 is Siemens' fixed standard-library SCALE block number |
 | Banner Auto-Trim | External device/station whose data needs to reach the HMI | Not a PLC block — an external source writing into HMI DB10 |
 
 Note: the DB's symbol-table name is **"HMI DB10"** (DB number 10) — STL
 addressing still uses the absolute form `DB10.DBx...` regardless of the
 symbolic name, so code snippets below say `DB10`, prose says "HMI DB10".
 
-Confirmed data flow — FC160 does not poll; FC105 and Banner Auto-Trim write
+Confirmed data flow — FC160 does not poll; FC155 and Banner Auto-Trim write
 into HMI DB10 directly, and FC160 only formats what's already there for the
 TP177A:
 
 ```
-FC105 (Glue Scale Logic)  --writes Setpoint, Actual Value-->  HMI DB10
+FC155 (Glue Scale Logic)  --writes Setpoint, Actual Value-->  HMI DB10
 Banner Auto-Trim          --writes (info TBD)------------->  HMI DB10
                                                                 |
                                                     FC160 (HMI Process)
@@ -83,17 +83,12 @@ Banner Auto-Trim          --writes (info TBD)------------->  HMI DB10
 
 ## Open questions (block this being made concrete)
 
-- **Is FC105 the standard Siemens SCALE library block, or custom?** FC105
-  is Siemens' fixed block number for the standard-library SCALE function
-  (raw analog -> engineering REAL). The draft in `plc-drafts/FC105.awl`
-  assumes it's a custom, purpose-built function instead (doing its own
-  inline scaling to avoid the question entirely) — confirm which is real.
-- **FC105 interface**: what DB/tags hold Setpoint and Actual Value today,
-  and what data type (INT, REAL, scaled integer)? Does FC105 already exist
+- **FC155 interface**: what DB/tags hold Setpoint and Actual Value today,
+  and what data type (INT, REAL, scaled integer)? Does FC155 already exist
   as a block, or is it planned?
 - **Glue scale hardware specifics**: which analog input address, raw
   signal range, and engineering-unit range does the glue scale actually
-  use? All placeholders in the FC105 draft right now.
+  use? All placeholders in the FC155 draft right now.
 - **HMI DB10 layout**: which offsets/tags are reserved for the glue-scale
   setpoint/actual pair vs. Banner Auto-Trim data? Is HMI DB10 already
   structured for this, or does it need new members added?

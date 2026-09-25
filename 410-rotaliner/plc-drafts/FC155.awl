@@ -1,14 +1,15 @@
-FUNCTION FC 105 : VOID
+FUNCTION FC 155 : VOID
 TITLE =Glue Scale Logic
 //DRAFT -- not verified against the real HMI DB10 layout, hardware
 //config, or the SIMATIC Manager project. Syntax-check and compile
-//here before downloading. See FC105_design.md in this folder for
-//rationale, including an open question about whether "FC105" here
-//is meant to be Siemens' standard SCALE library block or a custom
-//function like the one drafted below (this draft assumes custom, and
-//does its own scaling math inline either way, to avoid depending on
-//or colliding with whatever FC105 actually is in the standard-library
-//sense).
+//here before downloading. See FC155_design.md in this folder for
+//rationale.
+//
+//Deliberately numbered FC155, not FC105 -- FC105 is Siemens' fixed
+//standard-library SCALE block number; using a different number here
+//avoids any collision with it. The scaling math is also done inline
+//below (not via a SCALE call) so this has no dependency on whether
+//the standard library is even present in the project.
 //
 //DB10's symbol-table name is "HMI DB10" -- STL addressing below still
 //uses the absolute DB10.DBx form regardless of that symbolic name.
@@ -19,12 +20,12 @@ TITLE =Glue Scale Logic
 //
 //Assumed HMI DB10 layout used here (PROPOSAL -- reconcile against the
 //real DB; extends FC160_design.md's layout without overlapping it):
-//  DBD 0    GlueSetpoint         REAL   TP177A writes it, FC105 clamps it
-//  DBD 4    GlueActualValue      REAL   written by FC105
-//  DBD 14   GlueDeviation        REAL   written by FC105
-//  DBX 8.0  GlueOutOfTolerance   BOOL   written by FC105 (FC160 only relays it)
+//  DBD 0    GlueSetpoint         REAL   TP177A writes it, FC155 clamps it
+//  DBD 4    GlueActualValue      REAL   written by FC155
+//  DBD 14   GlueDeviation        REAL   written by FC155
+//  DBX 8.0  GlueOutOfTolerance   BOOL   written by FC155 (FC160 only relays it)
 //
-//PLACEHOLDERS below need real values -- see FC105_design.md:
+//PLACEHOLDERS below need real values -- see FC155_design.md:
 //  raw analog input address, raw signal range, engineering-unit range,
 //  Setpoint MIN/MAX, tolerance band.
 
@@ -95,7 +96,7 @@ TITLE =Deviation (Actual - Setpoint), for trending/display
       T     DB10.DBD   14      //GlueDeviation
 
 NETWORK
-TITLE =Out-of-tolerance decision -- FC105 owns this, FC160 only relays it
+TITLE =Out-of-tolerance decision -- FC155 owns this, FC160 only relays it
 //PLACEHOLDER: 5.0 is the assumed tolerance band in engineering units.
 //Each comparison is assigned to its own temp bit and combined
 //afterward with a plain U/O, rather than chaining O directly off a
