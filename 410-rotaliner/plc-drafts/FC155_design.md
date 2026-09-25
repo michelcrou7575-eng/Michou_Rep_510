@@ -18,10 +18,15 @@ The scaling math below is still done inline with plain STL arithmetic
 rather than by calling anything named SCALE, so this also has no runtime
 dependency on the standard library being present at all.
 
+**Confirmed: the Glue InFeed sensor is this same weight scale.** Glue
+InFeed isn't a separate subsystem needing its own block — this FC's
+`GlueActualValue`/`GlueOutOfTolerance` already is the Glue InFeed QC check,
+not just "Glue Scale Logic" in the abstract.
+
 ## What this FC155 draft does
 
-1. Reads the glue scale's raw analog input and converts it to an
-   engineering-unit REAL (`GlueActualValue`).
+1. Reads the glue scale's (= Glue InFeed's) raw analog input and converts
+   it to an engineering-unit REAL (`GlueActualValue`).
 2. **Clamps the operator-entered Setpoint** (`GlueSetpoint`, written by the
    TP177A's Setpoint entry field) to a safe MIN/MAX range every scan — real
    QC value, not just formatting: protects the process from a bad/typo'd

@@ -47,6 +47,7 @@ The Tuber (410) itself has no built-in QC for these — this project is an
 | Component | Role |
 |---|---|
 | Siemens S7-315-2 | Auxiliary PLC added to the Tuber. Controls/monitors: Glue InFeed, Glue Selection, Rotaliner polyethylene seal seam, and Hot Water Supply (cleaning) |
+| Glue InFeed weight scale | The Glue InFeed sensor — a weight scale |
 | ATmega2560 | "Intelligent" sensor on the Rotaliner (polyethylene seal seam) — does its own sensing/processing and reports to the PLC over RS232 |
 | Siemens CP340 | S7-300 point-to-point communication processor module — the S7-315-2's RS232 interface to the ATmega2560 |
 | Siemens TP177A HMI | Added to the Profibus network — status display and setpoint entry for the operator |
@@ -55,6 +56,11 @@ The Tuber (410) itself has no built-in QC for these — this project is an
 So the Rotaliner seal seam is monitored by the ATmega2560 acting as a smart
 sensor, which talks to the S7-315-2 via RS232 through the CP340 module —
 not directly wired I/O.
+
+**Confirmed: Glue InFeed is not a separate subsystem to design for.** Its
+sensor is the weight scale — the same physical sensor FC155 (Glue Scale
+Logic) already reads. FC155's `GlueActualValue`/`GlueOutOfTolerance` *is*
+the Glue InFeed QC check; no new block needed for it.
 
 ## Blocks (as understood so far)
 
@@ -98,10 +104,11 @@ FC156 (Banner Auto-Trim I/F)   --writes Fault (placeholder)------>  HMI DB10
   FC156's draft guesses "single discrete fault contact" purely as the
   smallest possible placeholder — treat it as unconfirmed, not a real
   design, until the actual interface is known.
-- **Glue InFeed / Glue Selection / Hot Water Supply**: how does the
-  S7-315-2 actually monitor/control each of these (I/O points, setpoints,
-  what "quality control" check is being added for each)? Not yet
-  described in enough detail to log block-by-block.
+- **Glue Selection / Hot Water Supply**: how does the S7-315-2 actually
+  monitor/control each of these (I/O points, setpoints, what "quality
+  control" check is being added)? Not yet described in enough detail to
+  log block-by-block. (Glue InFeed is resolved — see above, it's FC155's
+  weight scale, not a separate subsystem.)
 - **ATmega2560 <-> CP340 link**: what protocol/frame format does the
   ATmega2560 send over RS232 (baud rate, framing, message content), and
   which FC/DB in the S7-315-2 program reads the CP340 and turns that into

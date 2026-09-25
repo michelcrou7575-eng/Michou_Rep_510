@@ -55,6 +55,10 @@ log only.
   placeholder, since Banner Auto-Trim's real interface type (discrete,
   analog, or serial/fieldbus) isn't known yet. Relays into the
   `BannerAutoTrimFault` bit FC160's draft already reserves.
+- **Confirmed: Glue InFeed's sensor is the weight scale** — the same
+  physical sensor FC155 (Glue Scale Logic) already reads. Not a separate
+  subsystem: FC155's GlueActualValue/GlueOutOfTolerance already is the
+  Glue InFeed QC check, so no new block was needed for it.
 
 See `README.md` for the block interface table, data flow, and remaining
 open questions (HMI DB10 layout, FC155 tag addresses, Banner Auto-Trim's
