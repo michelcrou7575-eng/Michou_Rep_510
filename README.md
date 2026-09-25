@@ -1,7 +1,10 @@
 # TGIS-510 — Thermal Glue Inspection System
 
 Home-lab / after-hours project. **Separate from the 410 Rotaliner Tubing
-Seal Seam Monitor** (factory floor, S7-300/ATmega2560) — not related.
+Seal Seam Monitor** (factory floor, S7-300/ATmega2560) — not related. This
+repo also tracks that project's changelog, kept isolated in
+[`410-rotaliner/`](410-rotaliner/) — nothing in that directory is part of
+the TGIS-510 firmware below.
 
 Industrial QC system detecting hot-melt glue application on tubes moving at
 high speed. Confirms glue presence, temperature, and quantity across both
