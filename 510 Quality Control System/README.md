@@ -49,9 +49,12 @@ and are not wired into this build yet.
 
 ## Build
 
-PlatformIO, Arduino framework — see `platformio.ini`.
+PlatformIO, Arduino framework — see `platformio.ini`. The PlatformIO
+project root is this folder (`510 Quality Control System/`), not the repo
+root — `cd` in here first.
 
 ```
+cd "510 Quality Control System"
 pio run
 pio run -t upload
 pio device monitor
@@ -141,7 +144,9 @@ wrong and needs a real byte-for-byte capture to pin down.
   `getRawFrame()`).
 - `design-notes/tgis510_v4_14_0_speculative.cpp.txt` — discarded
   speculative draft, not built, kept for reference only (see Status above).
-- `410-rotaliner/` — unrelated project's changelog, kept isolated.
+
+Everything for this project lives under `510 Quality Control System/` at
+the repo root — there is no unrelated content alongside it.
 
 ## Known limitation
 
