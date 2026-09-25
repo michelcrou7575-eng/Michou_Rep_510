@@ -22,11 +22,6 @@ log only.
 - **Confirmed: FC160 does not poll FC105 or Banner Auto-Trim.** Both write
   into DB10 directly; FC160 only formats whatever is already there for the
   HMI.
-
-See `README.md` for the block interface table, data flow, and remaining
-open questions (DB10 layout, FC105 tag addresses, Banner Auto-Trim's actual
-interface) blocking an implementable version of this.
-
 - **System context recorded**: the 410 Tuber (paper rolls -> layered,
   glue-sealed tube via the Rotaliner polyethylene seal seam) feeds the 510
   Bottomer (forms bottoms with hot-melt glue, inspected separately by
@@ -38,3 +33,12 @@ interface) blocking an implementable version of this.
   the original machine lacks. A **Siemens TP177A** HMI is being added to
   the Profibus network for status display and setpoint entry, driven by
   FC160/DB10.
+- **ATmega2560 role confirmed**: it's an "intelligent" sensor on the
+  Rotaliner seal seam, linked to the S7-315-2 over RS232 through a
+  **Siemens CP240** point-to-point communication processor module — not
+  direct wired I/O.
+
+See `README.md` for the block interface table, data flow, and remaining
+open questions (DB10 layout, FC105 tag addresses, Banner Auto-Trim's
+interface, ATmega2560/CP240 protocol) blocking an implementable version of
+this.

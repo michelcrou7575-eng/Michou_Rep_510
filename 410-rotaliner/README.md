@@ -47,12 +47,14 @@ The Tuber (410) itself has no built-in QC for these — this project is an
 | Component | Role |
 |---|---|
 | Siemens S7-315-2 | Auxiliary PLC added to the Tuber. Controls/monitors: Glue InFeed, Glue Selection, Rotaliner polyethylene seal seam, and Hot Water Supply (cleaning) |
+| ATmega2560 | "Intelligent" sensor on the Rotaliner (polyethylene seal seam) — does its own sensing/processing and reports to the PLC over RS232 |
+| Siemens CP240 | S7-300 point-to-point communication processor module — the S7-315-2's RS232 interface to the ATmega2560 |
 | Siemens TP177A HMI | Added to the Profibus network — status display and setpoint entry for the operator |
 | Profibus | Network connecting the S7-315-2 to the TP177A |
 
-Where the previously-mentioned ATmega2560 fits into this (a satellite
-microcontroller for one of these four subsystems, presumably) is not yet
-recorded — TBD.
+So the Rotaliner seal seam is monitored by the ATmega2560 acting as a smart
+sensor, which talks to the S7-315-2 via RS232 through the CP240 module —
+not directly wired I/O.
 
 ## Blocks (as understood so far)
 
@@ -91,8 +93,10 @@ Banner Auto-Trim          --writes (info TBD)------------->  DB10
   S7-315-2 actually monitor/control each of these (I/O points, setpoints,
   what "quality control" check is being added for each)? Not yet
   described in enough detail to log block-by-block.
-- **ATmega2560's role**: mentioned in an earlier summary of this project
-  but not yet placed against the four subsystems above.
+- **ATmega2560 <-> CP240 link**: what protocol/frame format does the
+  ATmega2560 send over RS232 (baud rate, framing, message content), and
+  which FC/DB in the S7-315-2 program reads the CP240 and turns that into
+  the Rotaliner seal-seam data eventually surfaced via FC160/DB10?
 
 These need answering (from the SIMATIC Manager project / the actual
 hardware) before this can move from "tracked requirement" to real block
