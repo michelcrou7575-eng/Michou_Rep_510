@@ -61,7 +61,7 @@ not directly wired I/O.
 | Block | Role | Status |
 |---|---|---|
 | DB10 | HMI DB — data carried to/from the TP177A | Added |
-| FC160 | HMI Process — formats/relays DB10 for the TP177A over Profibus | Added |
+| FC160 | HMI Process — formats/relays DB10 for the TP177A over Profibus | Added; draft implementation in [`plc-drafts/FC160.awl`](plc-drafts/FC160.awl) + [`plc-drafts/FC160_design.md`](plc-drafts/FC160_design.md), not yet verified against the real project |
 | FC105 | Glue Scale Logic — glue-scale setpoint vs. actual value | Referenced, not yet confirmed added |
 | Banner Auto-Trim | External device/station whose data needs to reach the HMI | Not a PLC block — an external source writing into DB10 |
 
