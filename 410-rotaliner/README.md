@@ -63,22 +63,21 @@ not directly wired I/O.
 | HMI DB10 | Data carried to/from the TP177A | Added |
 | FC160 | HMI Process — formats/relays HMI DB10 for the TP177A over Profibus | Added; draft implementation in [`plc-drafts/FC160.awl`](plc-drafts/FC160.awl) + [`plc-drafts/FC160_design.md`](plc-drafts/FC160_design.md), not yet verified against the real project |
 | FC155 | Glue Scale Logic — glue-scale setpoint vs. actual value | Referenced, not yet confirmed added; draft implementation in [`plc-drafts/FC155.awl`](plc-drafts/FC155.awl) + [`plc-drafts/FC155_design.md`](plc-drafts/FC155_design.md), not yet verified against the real project. Deliberately numbered FC155, not FC105 — FC105 is Siemens' fixed standard-library SCALE block number |
-| Banner Auto-Trim | External device/station whose data needs to reach the HMI | Not a PLC block — an external source writing into HMI DB10 |
+| Banner Auto-Trim | External device/station whose data needs to reach the HMI | Not a PLC block itself — interfaced via draft **FC156**: [`plc-drafts/FC156.awl`](plc-drafts/FC156.awl) + [`plc-drafts/FC156_design.md`](plc-drafts/FC156_design.md). Much more speculative than FC155/FC160 — assumes a single discrete fault contact purely as a placeholder, since the real interface type (discrete/analog/serial) isn't known |
 
 Note: the DB's symbol-table name is **"HMI DB10"** (DB number 10) — STL
 addressing still uses the absolute form `DB10.DBx...` regardless of the
 symbolic name, so code snippets below say `DB10`, prose says "HMI DB10".
 
-Confirmed data flow — FC160 does not poll; FC155 and Banner Auto-Trim write
-into HMI DB10 directly, and FC160 only formats what's already there for the
-TP177A:
+Confirmed data flow — FC160 does not poll; FC155 and FC156 write into HMI
+DB10 directly, and FC160 only formats what's already there for the TP177A:
 
 ```
-FC155 (Glue Scale Logic)  --writes Setpoint, Actual Value-->  HMI DB10
-Banner Auto-Trim          --writes (info TBD)------------->  HMI DB10
-                                                                |
-                                                    FC160 (HMI Process)
-                                                    formats HMI DB10 for the TP177A
+FC155 (Glue Scale Logic)       --writes Setpoint, Actual Value-->  HMI DB10
+FC156 (Banner Auto-Trim I/F)   --writes Fault (placeholder)------>  HMI DB10
+                                                                       |
+                                                          FC160 (HMI Process)
+                                                          formats HMI DB10 for the TP177A
 ```
 
 ## Open questions (block this being made concrete)
@@ -96,6 +95,9 @@ Banner Auto-Trim          --writes (info TBD)------------->  HMI DB10
   a trim/cutoff station, something else), and what's its physical/logical
   interface to the S7-315-2 — discrete I/O, analog, or a fieldbus/serial
   link? What specific values ("info") does it need to write into HMI DB10?
+  FC156's draft guesses "single discrete fault contact" purely as the
+  smallest possible placeholder — treat it as unconfirmed, not a real
+  design, until the actual interface is known.
 - **Glue InFeed / Glue Selection / Hot Water Supply**: how does the
   S7-315-2 actually monitor/control each of these (I/O points, setpoints,
   what "quality control" check is being added for each)? Not yet

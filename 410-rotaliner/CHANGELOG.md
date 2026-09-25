@@ -49,8 +49,14 @@ log only.
   Originally drafted as FC105, renumbered to **FC155** to avoid colliding
   with Siemens' fixed standard-library SCALE block number (FC105/FC106 =
   SCALE/UNSCALE).
+- **Draft FC156 (Banner Auto-Trim Interface)** added: `plc-drafts/FC156.awl`
+  + `FC156_design.md`. Much more speculative than FC155/FC160 — assumes the
+  smallest possible interface (one discrete fault contact) purely as a
+  placeholder, since Banner Auto-Trim's real interface type (discrete,
+  analog, or serial/fieldbus) isn't known yet. Relays into the
+  `BannerAutoTrimFault` bit FC160's draft already reserves.
 
 See `README.md` for the block interface table, data flow, and remaining
 open questions (HMI DB10 layout, FC155 tag addresses, Banner Auto-Trim's
-interface, ATmega2560/CP340 protocol) blocking an implementable version of
-this.
+real interface, ATmega2560/CP340 protocol) blocking an implementable
+version of this.
