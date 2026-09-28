@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_00_00.cpp`, i.e. V5.00.00 -- see "V5.00.00" below for how we
+`tgis510_v5_00_01.cpp`, i.e. V5.00.01 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -47,6 +47,15 @@ standing rules and recent context carry over across sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V5.00.01** -- First step toward the V5.00.00 header brainstorm's
+  velocity-dependent processing mode: that's blocked on a real
+  `ENCODER_COUNTS_PER_MM` (still `1.0f`, a placeholder), which needs an
+  actual bench/field measurement, not a guessed constant. Added
+  `EncoderTracker::resetTotal()` and a new calibration-only serial
+  command `'Z'` (not a `$B` diag button -- no panel address) that zeroes
+  the running encoder total. Procedure: send `'Z'`, feed a tube of known
+  length through the presence sensor, send `'D'`, divide the raw encoder
+  count by that length in mm to get the real `ENCODER_COUNTS_PER_MM`.
 - **V5.00.00** -- New reference baseline, replacing the V4.15.x line. The
   user took V4.15.73, kept working on it in their own editor (Allman
   braces throughout, not this file's K&R style) on a different branch
