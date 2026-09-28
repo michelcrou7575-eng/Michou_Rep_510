@@ -1,9 +1,10 @@
 # TGIS-510 firmware -- working conventions
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
-Inspection System lives in `src/tgis510_v4_15_N.cpp`. Read this file before
-making changes so standing rules and recent context carry over across
-sessions.
+Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
+`tgis510_v5_00_00.cpp`, i.e. V5.00.00 -- see "V5.00.00" below for how we
+got here from the V4.15.x line). Read this file before making changes so
+standing rules and recent context carry over across sessions.
 
 ## Standing rules
 
@@ -25,11 +26,15 @@ sessions.
   This is about the firmware edit itself, not the git commit -- committing
   still only happens on a later "GO".
 - **Version Adjust when you modify.** Every content change to the firmware
-  bumps the version, in lockstep, all in the same edit:
-  1. Rename `src/tgis510_v4_15_N.cpp` -> `src/tgis510_v4_15_(N+1).cpp`
-     (`git mv`).
-  2. Update the `// Ref: TGIS-510_cpp_V4_15.N` header comment at the top of
-     the file.
+  bumps the version, in lockstep, all in the same edit. Current scheme
+  (since V5.00.00): `VX.YY.ZZ` <-> `src/tgis510_vX_YY_ZZ.cpp`, bump `ZZ`
+  for a normal change (`ZZ` wraps to `YY+1.00` at 99, bump `YY`/`X` only
+  for something you'd actually call a minor/major bump). Before that, the
+  scheme was `V4.15.N` <-> `src/tgis510_v4_15_N.cpp`, bumping `N`.
+  1. Rename `src/tgis510_v...cpp` to the new version's filename (`git mv`,
+     or a plain rename if the source came from outside this repo).
+  2. Update the `// Ref: TGIS-510_cpp_V...` header comment at the top of
+     the file to match.
   3. Update `platformio.ini`'s `FW_VERSION_STRING`/`FW_FILE_STRING`
      build_flags to match.
   One version bump per logical change, even if several bumps happen back
@@ -42,6 +47,39 @@ sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V5.00.00** -- New reference baseline, replacing the V4.15.x line. The
+  user took V4.15.73, kept working on it in their own editor (Allman
+  braces throughout, not this file's K&R style) on a different branch
+  (`claude/510-bottomer-hot-melt-monitor-3rq1ao`, file
+  `TGIS-510_cpp_V4_15.74`, pushed there by mistake), and asked for it to
+  be merged in here and renamed V5.00.00 -- a deliberate major bump, not
+  a continuation of V4.15.x's patch counter. Confirmed before merging:
+  it already contains everything through V4.15.73 verbatim (comments
+  match word-for-word), plus real new work on top:
+  - `setButtonStatusLed()` no longer drives the physical MCP LED at all
+    for the 5 SETUP-group buttons -- they now drive *only* the `$B4x` HMI
+    lamp. Resolves the pin-sharing caveat flagged in V4.15.71 (IO1-IO5
+    bench tests could desync the enclosure LED from the Enable state) by
+    removing the shared write entirely, consistent with "all 7 MCP LEDs
+    are bench-test-only."
+  - New `refreshFunctionButtonLamps()`: re-sends all 5 button lamps after
+    every toggle, so a stale bit from a screen change or mutual-exclusion
+    reset can't linger.
+  - New `clearFunctionButtonStates()`, wired into `$W50` (current screen
+    number) change detection: switching HMI screens now disarms all 5
+    Enable toggles and refreshes their lamps. `$W50` was tracked since
+    early in this file's history but never acted on until now.
+  - Extensive new header brainstorming on a velocity-dependent processing
+    mode: raw-delta below 60 m/min (today's only path), calibrated
+    Celsius from 60-200 m/min (`mlx.getFrame()` vs `getRawFrame()`), with
+    Strip1/Strip2 reframed as Outer/Inner. Not yet implemented --
+    `ENCODER_COUNTS_PER_MM` is still a placeholder, so there's no real
+    speed estimate to switch on yet, and Celsius mode needs its own
+    thresholds (today's raw-delta thresholds don't carry over). Read the
+    file's own header for the full brainstorm before starting this.
+  Kept as-is (not reformatted to this file's usual K&R/blank-line style)
+  to avoid introducing bugs while adopting 3556 lines of unreviewed
+  content sight-unseen beyond the diff above -- reformat later if wanted.
 - **V4.15.73** -- Added trailing `// ledPin -> ON/OFF` comments on the
   actual `digitalWrite`/`mcp.digitalWrite` calls for the test LEDs
   (`scanMcpStatusLeds()`'s sweep loop, `toggleMcpOutput()`), per the

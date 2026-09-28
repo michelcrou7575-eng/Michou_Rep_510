@@ -1,13 +1,15 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V4_15.73
+// Ref: TGIS-510_cpp_V5.00.00
 //
-// Home-lab / after-hours project. Separate from the 410 Rotaliner Tubing Seal
-// Seam Monitor (factory floor, S7-300/ATmega2560) -- do not conflate.
-//
-// Industrial QC system detecting hot-melt glue application on tubes moving
-// at high speed. Confirms glue presence, temperature, and quantity across
-// both glue strips per tube pass, and pushes a stable QC-confirmation image
-// to an operator HMI (Omron NS12).
+// Industrial QC system detecting hot-melt glue application on paper tubes moving
+// at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
+// both glue strips (Outer = Strip 1, Inner = Strip 2), per tube pass, and pushes a stable QC-confirmation image
+// to an operator HMI (Omron NS12). Need a full definition @ Lower Velocity (<60 m/min) and a partial definition @
+// Upper Velocity (60-200 m/min). The system is designed to be robust & reliable, with a watchdog to recover from hangs,
+// a non-blocking design to ensure timely processing of sensor data, and to have control of the machine stopping action in order
+// to limit the waste and also prevent damage to the machine or product. The system uses an ESP32 microcontroller, a Keyence IV2-G30/G300CA sensor
+// for hot-melt trace detection, an MLX90640 thermal camera for temperature and quantity measurement, and an encoder for
+// tube position tracking. The system also includes a tube presence sensor for ground-truth leading/trailing edge detection.
 //
 // Division of responsibility:
 //   - Keyence IV2-G30/G300CA owns hot-melt trace start/end pass/fail. ESP32
@@ -15,12 +17,26 @@
 //     PLC input (wired directly, not through the ESP32). It does not
 //     detect tube boundaries.
 //   - MLX90640 owns strip presence, temperature and quantity (3-4 tube
-//     sample window acceptable).
+//     sample window acceptable @ higher velocities).
 //   - Encoder (single-channel pulse train, no direction) gives real tube
 //     position/length, used to project forward and fire triggers at
 //     adjustable lead distances ahead of the MLX90640 and Keyence stations.
 //   - Tube presence sensor gives the ground-truth leading/trailing edges
 //     that projection is anchored to.
+
+// BrainStorming notes on the MLX90640 acquisition path:
+
+// Below 60 m/min, the firmware could use calibrated Celsius frames; above it, it could use the faster raw-count path.
+// The key is to select one acquisition path per frame: getFrame() reads the two MLX subpages and converts them
+// to calibrated temperatures, while getRawFrame() reads those subpages without that conversion. 
+
+// It doesn’t currently calculate line speed. It has encoder tracking, but ENCODER_COUNTS_PER_MM is still a placeholder,
+// so it can’t reliably determine when speed is below 60 m/min.
+// The current QC thresholds, baseline subtraction, and Matrix palette are in raw-delta units.
+// A Celsius mode needs its own calibrated-frame processing and thresholds; raw-delta thresholds can’t simply be reused.
+// A practical approach is to implement it as a speed-selected mode and validate both the speed estimate and Celsius 
+// thresholds on the machine. So the firmware could have a speed threshold (e.g., 60 m/min) to switch between raw-delta and 
+// calibrated Celsius processing and in both cases, it would display the results on the HMI in Celsius.
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -31,10 +47,10 @@
 #include "driver/pcnt.h"
 
 #ifndef FW_VERSION_STRING
-#define FW_VERSION_STRING "V4.15.41"
+#define FW_VERSION_STRING "V4.15.74"
 #endif
 #ifndef FW_FILE_STRING
-#define FW_FILE_STRING "tgis510_v4_15_41.cpp"
+#define FW_FILE_STRING "tgis510_v4_15_74.cpp"
 #endif
 static const char *FW_VERSION = FW_VERSION_STRING;
 static const char *FW_FILE = FW_FILE_STRING;
@@ -46,25 +62,26 @@ static const uint32_t WATCHDOG_TIMEOUT_S = 3;
 // Periodic Serial diagnostic report cadence.
 static const uint32_t DIAGNOSTIC_INTERVAL_MS = 1000;
 
-namespace Pins {
-constexpr uint8_t KEYENCE_TRIGGER_PIN = 1;   // 24V/220ohm OUTPUT, Conn 9
-constexpr uint8_t ESP_OPTO_3 = 2; // 24V/220ohm OUTPUT, Conn 8 -- TO_PLC_COMM bit 2
-// GPIO3: S3 boot-strapping pin, avoid.
-constexpr uint8_t ENCODER_PULSE_PIN = 4;     // 24V/10K-1.5K divider -> 3.2V INPUT, Conn 7
-constexpr uint8_t PRESENCE_SENSOR_PIN = 5;   // 24V/10K-1.5K divider -> 3.2V INPUT, Conn 6
-// Conn 5 was Keyence Result until V4.15.55; Keyence's result output now
-// wires directly to a PLC input instead, freeing this pin for the ESP/PLC
-// comms byte below.
-constexpr uint8_t ESP_INPUT_3 = 6;   // 24V/10K-1.5K divider -> 3.2V INPUT, Conn 5 -- FROM_PLC_COMM bit 2
-constexpr uint8_t I2C_SDA = 8;
-constexpr uint8_t I2C_SCL = 9;
-// GPIO10, GPIO11: field report marks these NC.
+namespace Pins
+{
+  constexpr uint8_t KEYENCE_TRIGGER_PIN = 1; // 24V/220ohm OUTPUT, Conn 9
+  constexpr uint8_t ESP_OPTO_3 = 2;          // 24V/220ohm OUTPUT, Conn 8 -- TO_PLC_COMM bit 2
+  // GPIO3: S3 boot-strapping pin, avoid.
+  constexpr uint8_t ENCODER_PULSE_PIN = 4;   // 24V/10K-1.5K divider -> 3.2V INPUT, Conn 7
+  constexpr uint8_t PRESENCE_SENSOR_PIN = 5; // 24V/10K-1.5K divider -> 3.2V INPUT, Conn 6
+  // Conn 5 was Keyence Result until V4.15.55; Keyence's result output now
+  // wires directly to a PLC input instead, freeing this pin for the ESP/PLC
+  // comms byte below.
+  constexpr uint8_t ESP_INPUT_3 = 6; // 24V/10K-1.5K divider -> 3.2V INPUT, Conn 5 -- FROM_PLC_COMM bit 2
+  constexpr uint8_t I2C_SDA = 8;
+  constexpr uint8_t I2C_SCL = 9;
+  // GPIO10, GPIO11: field report marks these NC.
 
-// Waveshare ESP32-S3-Zero onboard WS2812 RGB LED.
-constexpr uint8_t RGB_LED = 21;
+  // Waveshare ESP32-S3-Zero onboard WS2812 RGB LED.
+  constexpr uint8_t RGB_LED = 21;
 
-constexpr uint8_t NS12_TX = 43;
-constexpr uint8_t NS12_RX = 44;
+  constexpr uint8_t NS12_TX = 43;
+  constexpr uint8_t NS12_RX = 44;
 } // namespace Pins
 
 // =====================================================================
@@ -76,7 +93,8 @@ constexpr uint8_t NS12_RX = 44;
 // =====================================================================
 static const uint32_t I2C_CLOCK_HZ = 800000UL;
 
-bool isI2CAddressPresent(uint8_t address) {
+bool isI2CAddressPresent(uint8_t address)
+{
   Wire.beginTransmission(address);
   return Wire.endTransmission() == 0;
 }
@@ -86,7 +104,8 @@ bool isI2CAddressPresent(uint8_t address) {
 // =====================================================================
 Adafruit_NeoPixel statusLed(1, Pins::RGB_LED, NEO_RGB + NEO_KHZ800);
 
-void setStatusLed(uint8_t red, uint8_t green, uint8_t blue) {
+void setStatusLed(uint8_t red, uint8_t green, uint8_t blue)
+{
   statusLed.setPixelColor(0, statusLed.Color(red, green, blue));
   statusLed.show();
 }
@@ -94,7 +113,8 @@ void setStatusLed(uint8_t red, uint8_t green, uint8_t blue) {
 // =====================================================================
 // Board / I2C bring-up diagnostics -- run once at startup.
 // =====================================================================
-void printBoardInformation() {
+void printBoardInformation()
+{
   Serial.println();
   Serial.println(F("CONTROLLER INFORMATION"));
   Serial.println(F("----------------------------------------------------"));
@@ -104,22 +124,28 @@ void printBoardInformation() {
   Serial.printf("PSRAM detected     : %s\n", psramFound() ? "YES" : "NO");
 }
 
-void runI2CScanner() {
+void runI2CScanner()
+{
   Serial.println();
   Serial.println(F("I2C SCANNER"));
   Serial.println(F("----------------------------------------------------"));
   uint8_t deviceCount = 0;
 
-  for (uint8_t address = 1; address < 127; address++) {
-    if (isI2CAddressPresent(address)) {
+  for (uint8_t address = 1; address < 127; address++)
+  {
+    if (isI2CAddressPresent(address))
+    {
       Serial.printf("Device found       : 0x%02X\n", address);
       deviceCount++;
     }
   }
 
-  if (deviceCount == 0) {
+  if (deviceCount == 0)
+  {
     Serial.println(F("No I2C devices found."));
-  } else {
+  }
+  else
+  {
     Serial.printf("Total devices      : %u\n", deviceCount);
   }
 }
@@ -166,6 +192,8 @@ uint32_t fpsWindowFrameCount = 0;
 bool continuousMlxTestMode = false;
 uint32_t lastContinuousMlxPrintMs = 0;
 constexpr uint32_t CONTINUOUS_MLX_PRINT_INTERVAL_MS = 250;
+uint32_t lastLiveMatrixPushMs = 0;
+constexpr uint32_t LIVE_MATRIX_REFRESH_INTERVAL_MS = 500;//1000;
 
 //
 // Subpage-to-pixel combination verified against the actual driver source
@@ -196,26 +224,34 @@ constexpr uint8_t RAW_BASELINE_FRAME_COUNT = 32;
 // Combines one getRawFrame() result into a signed, per-pixel raw-ADC-count
 // array (NOT baseline-subtracted -- see subtractBaseline() below). Returns
 // false if getRawFrame() itself failed.
-bool readMlxRawCombined(float *outPixels) {
+bool readMlxRawCombined(float *outPixels)
+{
   int status = mlx.getRawFrame(rawPage0, rawPage1);
 
-  if (status != 0) return false;
+  if (status != 0)
+    return false;
 
   uint16_t subpageOf0 = rawPage0[833];
   uint16_t subpageOf1 = rawPage1[833];
 
-  for (int pixelNumber = 0; pixelNumber < 32 * 24; pixelNumber++) {
+  for (int pixelNumber = 0; pixelNumber < 32 * 24; pixelNumber++)
+  {
     int row = pixelNumber / 32;
     int col = pixelNumber % 32;
     int chessPattern = (row % 2) ^ (col % 2);
 
     uint16_t raw;
 
-    if (chessPattern == subpageOf0) {
+    if (chessPattern == subpageOf0)
+    {
       raw = rawPage0[pixelNumber];
-    } else if (chessPattern == subpageOf1) {
+    }
+    else if (chessPattern == subpageOf1)
+    {
       raw = rawPage1[pixelNumber];
-    } else {
+    }
+    else
+    {
       // Neither read claims this pixel's subpage -- shouldn't happen if
       // frameData0/1 are genuinely the two different subpages, but don't
       // fabricate a value if it does.
@@ -227,36 +263,46 @@ bool readMlxRawCombined(float *outPixels) {
     // driver's own MLX90640_CalculateTo() uses on frameData[pixelNumber].
     int32_t signedRaw = (int32_t)raw;
 
-    if (signedRaw > 32767) signedRaw -= 65536;
+    if (signedRaw > 32767)
+      signedRaw -= 65536;
     outPixels[pixelNumber] = (float)signedRaw;
   }
   return true;
 }
 
-void subtractBaseline(const float *rawPixels, float *outDelta) {
-  for (int i = 0; i < 32 * 24; i++) {
+void subtractBaseline(const float *rawPixels, float *outDelta)
+{
+  for (int i = 0; i < 32 * 24; i++)
+  {
     outDelta[i] = rawPixels[i] - rawBaseline[i];
   }
 }
 
-void startRawBaselineCapture() {
+void startRawBaselineCapture()
+{
   rawBaselineCaptureInProgress = true;
   rawBaselineFramesCollected = 0;
 
-  for (int i = 0; i < 32 * 24; i++) rawBaselineAccumulator[i] = 0;
+  for (int i = 0; i < 32 * 24; i++)
+    rawBaselineAccumulator[i] = 0;
   Serial.printf("[MLX] Baseline capture starting -- averaging %u idle frames.\n",
                 RAW_BASELINE_FRAME_COUNT);
 }
 
 // Call once per successful raw read while a baseline capture is running.
-void serviceRawBaselineCapture(const float *rawPixels) {
-  if (!rawBaselineCaptureInProgress) return;
+void serviceRawBaselineCapture(const float *rawPixels)
+{
+  if (!rawBaselineCaptureInProgress)
+    return;
 
-  for (int i = 0; i < 32 * 24; i++) rawBaselineAccumulator[i] += rawPixels[i];
+  for (int i = 0; i < 32 * 24; i++)
+    rawBaselineAccumulator[i] += rawPixels[i];
   rawBaselineFramesCollected++;
 
-  if (rawBaselineFramesCollected >= RAW_BASELINE_FRAME_COUNT) {
-    for (int i = 0; i < 32 * 24; i++) {
+  if (rawBaselineFramesCollected >= RAW_BASELINE_FRAME_COUNT)
+  {
+    for (int i = 0; i < 32 * 24; i++)
+    {
       rawBaseline[i] = rawBaselineAccumulator[i] / (float)RAW_BASELINE_FRAME_COUNT;
     }
     rawBaselineCaptureInProgress = false;
@@ -274,57 +320,71 @@ constexpr float MIN_PLAUSIBLE_RAW_DELTA = -5000.0f;
 constexpr float MAX_PLAUSIBLE_RAW_DELTA = 5000.0f;
 uint16_t lastFrameRejectedPixelCount = 0;
 
-bool isPlausibleTemp(float t) {
+bool isPlausibleTemp(float t)
+{
   return isfinite(t) && t >= MIN_PLAUSIBLE_RAW_DELTA && t <= MAX_PLAUSIBLE_RAW_DELTA;
 }
 
-void calculateFrameStatistics() {
+void calculateFrameStatistics()
+{
   float sumC = 0.0f;
   float minC = INFINITY;
   float maxC = -INFINITY;
   uint16_t validCount = 0;
   uint16_t rejectedCount = 0;
 
-  for (size_t i = 0; i < 32 * 24; i++) {
+  for (size_t i = 0; i < 32 * 24; i++)
+  {
     float t = mlxFrame[i];
 
-    if (isfinite(t) && !isPlausibleTemp(t)) rejectedCount++;
+    if (isfinite(t) && !isPlausibleTemp(t))
+      rejectedCount++;
 
-    if (!isPlausibleTemp(t)) continue;
+    if (!isPlausibleTemp(t))
+      continue;
 
-    if (t < minC) minC = t;
+    if (t < minC)
+      minC = t;
 
-    if (t > maxC) maxC = t;
+    if (t > maxC)
+      maxC = t;
     sumC += t;
     validCount++;
   }
 
   lastFrameRejectedPixelCount = rejectedCount;
 
-  if (validCount > 0) {
+  if (validCount > 0)
+  {
     minimumTemperatureC = minC;
     maximumTemperatureC = maxC;
     averageTemperatureC = sumC / (float)validCount;
-  } else {
+  }
+  else
+  {
     minimumTemperatureC = NAN;
     maximumTemperatureC = NAN;
     averageTemperatureC = NAN;
   }
 }
 
-void updateFrameRate() {
+void updateFrameRate()
+{
   uint32_t now = millis();
   uint32_t elapsed = now - fpsWindowStartMs;
 
-  if (elapsed >= 2000UL) {
+  if (elapsed >= 2000UL)
+  {
     measuredFramesPerSecond = (float)fpsWindowFrameCount * 1000.0f / (float)elapsed;
     fpsWindowStartMs = now;
     fpsWindowFrameCount = 0;
   }
 }
 
-bool initializeMlx() {
-  if (!mlx.begin(MLX90640_I2CADDR_DEFAULT, &Wire)) {
+bool initializeMlx()
+{
+  if (!mlx.begin(MLX90640_I2CADDR_DEFAULT, &Wire))
+  {
     return false;
   }
   mlx.setMode(MLX90640_CHESS);
@@ -333,7 +393,8 @@ bool initializeMlx() {
   return true;
 }
 
-void attemptCameraRecovery() {
+void attemptCameraRecovery()
+{
   Serial.println();
   Serial.println(F("CAMERA RECOVERY"));
   Serial.println(F("----------------------------------------------------"));
@@ -351,14 +412,18 @@ void attemptCameraRecovery() {
 
   mlxDetected = isI2CAddressPresent(MLX90640_I2CADDR_DEFAULT);
 
-  if (mlxDetected) {
+  if (mlxDetected)
+  {
     mlxInitialized = initializeMlx();
   }
 
-  if (mlxInitialized) {
+  if (mlxInitialized)
+  {
     Serial.println(F("Camera recovery successful."));
     setStatusLed(0, 25, 0);
-  } else {
+  }
+  else
+  {
     Serial.println(F("Camera recovery failed."));
     setStatusLed(30, 0, 0);
   }
@@ -381,8 +446,8 @@ static const uint8_t CAPTURE_SAMPLE_COUNT = 4;
 // get real numbers: capture a baseline with 'B' at room temp, then use
 // 'X' against both an idle scene and a known-hot scene, read the
 // reported raw-minus-baseline deltas, and use those.
-static const float MATRIX_RAW_DELTA_MIN = 0.0f;      // PLACEHOLDER, no physical grounding
-static const float MATRIX_RAW_DELTA_MAX = 150.0f;    // tuned against a real hand-heat bench test
+static const float MATRIX_RAW_DELTA_MIN = 0.0f;       // PLACEHOLDER, no physical grounding
+static const float MATRIX_RAW_DELTA_MAX = 150.0f;     // tuned against a real hand-heat bench test
 static const float CAPTURE_TRIGGER_RAW_DELTA = 40.0f; // tuned against a real hand-heat bench test
 
 // =====================================================================
@@ -401,11 +466,12 @@ static const float CAPTURE_TRIGGER_RAW_DELTA = 40.0f; // tuned against a real ha
 // PLACEHOLDER: exact column ranges for the two glue strips are not yet
 // characterized against a real tube. Defaulting to left/right halves.
 // =====================================================================
-namespace StripZone {
-constexpr uint8_t COLS = 32;
-constexpr uint8_t ROWS = 24;
-constexpr uint8_t STRIP1_COL_START = 0, STRIP1_COL_END = 15;  // PLACEHOLDER
-constexpr uint8_t STRIP2_COL_START = 16, STRIP2_COL_END = 31; // PLACEHOLDER
+namespace StripZone
+{
+  constexpr uint8_t COLS = 32;
+  constexpr uint8_t ROWS = 24;
+  constexpr uint8_t STRIP1_COL_START = 0, STRIP1_COL_END = 15;  // PLACEHOLDER
+  constexpr uint8_t STRIP2_COL_START = 16, STRIP2_COL_END = 31; // PLACEHOLDER
 } // namespace StripZone
 
 // =====================================================================
@@ -419,35 +485,38 @@ Adafruit_MCP23X17 mcp;
 static const uint8_t MCP_I2C_ADDR = 0x20;
 static const uint32_t MCP_POLL_INTERVAL_MS = 20;
 
-namespace McpPin {
-// Internal status LED (enclosure-mounted) -- a single RGB LED, one color
-// channel lit at a time (not 3 simultaneous channels mixing to a blended
-// color).
-constexpr uint8_t ILED_R = 8;  // GPB0, OUTPUT
-constexpr uint8_t ILED_G = 9;  // GPB1, OUTPUT
-constexpr uint8_t ILED_B = 10; // GPB2, OUTPUT
-constexpr uint8_t ELED_Y = 11; // GPB3, OUTPUT (3.3V/470ohm) -- external yellow LED
-// External status LED (operator-visible) -- single RGB LED (same one-
-// channel-at-a-time convention as internal) PLUS a separate discrete
-// yellow LED, so 4 selectable colors total, not 3.
-constexpr uint8_t ELED_R = 12; // GPB4, OUTPUT
-constexpr uint8_t ELED_G = 13; // GPB5, OUTPUT
-constexpr uint8_t ELED_B = 14; // GPB6, OUTPUT
-constexpr uint8_t INPUT_2 = 0; // GPA0, INPUT, Conn 1 -- FROM_PLC_COMM bit 1
-constexpr uint8_t OPTO_2 = 1;  // GPA1, OUTPUT (24V/220ohm), Conn 3 -- TO_PLC_COMM bit 1
-constexpr uint8_t INPUT_1 = 2; // GPA2, INPUT, Conn 2 -- FROM_PLC_COMM bit 0
-constexpr uint8_t OPTO_1 = 3;  // GPA3, OUTPUT (24V/220ohm), Conn 4 -- TO_PLC_COMM bit 0
+namespace McpPin
+{
+  // Internal status LED (enclosure-mounted) -- a single RGB LED, one color
+  // channel lit at a time (not 3 simultaneous channels mixing to a blended
+  // color).
+  constexpr uint8_t ILED_R = 8;  // GPB0, OUTPUT
+  constexpr uint8_t ILED_G = 9;  // GPB1, OUTPUT
+  constexpr uint8_t ILED_B = 10; // GPB2, OUTPUT
+  constexpr uint8_t ELED_Y = 11; // GPB3, OUTPUT (3.3V/470ohm) -- external yellow LED
+  // External status LED (operator-visible) -- single RGB LED (same one3
+  // channel-at-a-time convention as internal) PLUS a separate discrete
+  // yellow LED, so 4 selectable colors total, not 3.
+  constexpr uint8_t ELED_R = 12; // GPB4, OUTPUT
+  constexpr uint8_t ELED_G = 13; // GPB5, OUTPUT
+  constexpr uint8_t ELED_B = 14; // GPB6, OUTPUT
+  constexpr uint8_t INPUT_2 = 0; // GPA0, INPUT, Conn 1 -- FROM_PLC_COMM bit 1
+  constexpr uint8_t OPTO_2 = 1;  // GPA1, OUTPUT (24V/220ohm), Conn 3 -- TO_PLC_COMM bit 1
+  constexpr uint8_t INPUT_1 = 2; // GPA2, INPUT, Conn 2 -- FROM_PLC_COMM bit 0
+  constexpr uint8_t OPTO_1 = 3;  // GPA3, OUTPUT (24V/220ohm), Conn 4 -- TO_PLC_COMM bit 0
 } // namespace McpPin
 
 bool mcpOk = false;
 
 constexpr uint8_t kMcpOutputPins[9] = {McpPin::ILED_R, McpPin::ILED_G, McpPin::ILED_B,
-                                        McpPin::ELED_R, McpPin::ELED_G, McpPin::ELED_B,
-                                        McpPin::ELED_Y, McpPin::OPTO_1, McpPin::OPTO_2};
+                                       McpPin::ELED_R, McpPin::ELED_G, McpPin::ELED_B,
+                                       McpPin::ELED_Y, McpPin::OPTO_1, McpPin::OPTO_2};
 bool mcpOutputState[9] = {false, false, false, false, false, false, false, false, false};
 
-void toggleMcpOutput(uint8_t idx) {
-  if (!mcpOk || idx >= 9) return;
+void toggleMcpOutput(uint8_t idx)
+{
+  if (!mcpOk || idx >= 9)
+    return;
   mcpOutputState[idx] = !mcpOutputState[idx];
   mcp.digitalWrite(kMcpOutputPins[idx], mcpOutputState[idx]); // kMcpOutputPins[idx] -> mcpOutputState[idx] (HIGH/LOW)
 }
@@ -458,10 +527,12 @@ void toggleMcpOutput(uint8_t idx) {
 // 64-bit running total every service() call, well inside its wrap period
 // at any plausible pulse rate for this line.
 // =====================================================================
-class EncoderTracker {
+class EncoderTracker
+{
 public:
-  void begin(uint8_t pulseGpio) {
-    pinMode(pulseGpio, INPUT_PULLDOWN);
+  void begin(uint8_t pulseGpio)
+  {
+    pinMode(pulseGpio, INPUT);
     pcnt_config_t cfg = {};
     cfg.pulse_gpio_num = pulseGpio;
     cfg.ctrl_gpio_num = PCNT_PIN_NOT_USED;
@@ -483,12 +554,14 @@ public:
     totalCounts = 0;
   }
 
-  void service() {
+  void service()
+  {
     int16_t hw = 0;
     pcnt_get_counter_value(PCNT_UNIT_0, &hw);
     int32_t delta = (int32_t)hw - (int32_t)lastHwCount;
 
-    if (delta < 0) {
+    if (delta < 0)
+    {
       delta += 30000; // wrapped past counter_h_lim
     }
     totalCounts += delta;
@@ -544,7 +617,8 @@ int64_t tubeEndEncoderCount = 0;
 // =====================================================================
 volatile bool presenceEdgePending = false;
 volatile bool presenceState = false;
-void IRAM_ATTR presenceIsr() {
+void IRAM_ATTR presenceIsr()
+{
   presenceState = digitalRead(Pins::PRESENCE_SENSOR_PIN) == HIGH;
   presenceEdgePending = true;
 }
@@ -557,18 +631,24 @@ void IRAM_ATTR presenceIsr() {
 // therefore a non-blocking pending-low state serviced every loop, not a
 // delay()-based pulse.
 // =====================================================================
-class KeyenceTrigger {
+class KeyenceTrigger
+{
 public:
-  void begin(uint8_t pin) {
+  void begin(uint8_t pin) // Pin Setup
+  {
     gpio = pin;
     pinMode(gpio, OUTPUT);
     digitalWrite(gpio, LOW);
   }
 
-  void fire() {
-    digitalWrite(gpio, HIGH);
-    pulseStartUs = micros();
-    pending = true;
+  void fire() // Non-blocking trigger pulse
+  {
+    if (!pending) // To prevent overlapping triggers
+    {
+      digitalWrite(gpio, HIGH);
+      pulseStartUs = micros();
+      pending = true;
+    }
   }
 
   // Comfortably wider than the 100us Keyence minimum and the MCP23017
@@ -576,8 +656,10 @@ public:
   // Time" should also be set wider than this on the sensor itself.
   static const uint32_t PULSE_WIDTH_US = 500;
 
-  void service() {
-    if (pending && (uint32_t)(micros() - pulseStartUs) >= PULSE_WIDTH_US) {
+  void service()
+  {
+    if (pending && (uint32_t)(micros() - pulseStartUs) >= PULSE_WIDTH_US)
+    {
       digitalWrite(gpio, LOW);
       pending = false;
     }
@@ -612,38 +694,39 @@ KeyenceTrigger keyenceTrigger;
 
 #define NS12_DEBUG_RAW_RX 0
 
-namespace NS12 {
-constexpr uint8_t ESC = 0x1B;
-constexpr long BAUD = 38400; // requires matching CX-Designer Comm Settings on the panel side
-constexpr uint32_t RM_READ_TIMEOUT_MS = 250;
+namespace NS12
+{
+  constexpr uint8_t ESC = 0x1B;
+  constexpr long BAUD = 38400; // requires matching CX-Designer Comm Settings on the panel side
+  constexpr uint32_t RM_READ_TIMEOUT_MS = 250;
 
-// Word Lamp matrix -- default/trusted mode, 16x8 grid at $W700-$W827,
-// column-major, stride 8: address(col,row) = 700 + col*8 + row.
-constexpr uint16_t MATRIX_BASE_ADDR = 700;
-constexpr uint8_t MATRIX_COLS_DEFAULT = 16;
-constexpr uint8_t MATRIX_ROWS_DEFAULT = 8;
+  // Word Lamp matrix -- default/trusted mode, 16x8 grid at $W700-$W827,
+  // column-major, stride 8: address(col,row) = 700 + col*8 + row.
+  constexpr uint16_t MATRIX_BASE_ADDR = 700;
+  constexpr uint8_t MATRIX_COLS_DEFAULT = 16;
+  constexpr uint8_t MATRIX_ROWS_DEFAULT = 8;
 
-// 16x8 is the default, trusted mode -- a full 32x24 burst starves the PT
-// of time to service RM reads. Column-paced 32x24 is opt-in/experimental,
-// self-monitored: auto-reverts to 16x8 if RM success rate collapses (see
-// checkDisplayAutoFallback()).
-constexpr bool ENABLE_EXPERIMENTAL_32x24 = false;
-constexpr uint8_t MATRIX_COLS_EXPERIMENTAL = 32;
-constexpr uint8_t MATRIX_ROWS_EXPERIMENTAL = 24;
+  // 16x8 is the default, trusted mode -- a full 32x24 burst starves the PT
+  // of time to service RM reads. Column-paced 32x24 is opt-in/experimental,
+  // self-monitored: auto-reverts to 16x8 if RM success rate collapses (see
+  // checkDisplayAutoFallback()).
+  constexpr bool ENABLE_EXPERIMENTAL_32x24 = false;
+  constexpr uint8_t MATRIX_COLS_EXPERIMENTAL = 32;
+  constexpr uint8_t MATRIX_ROWS_EXPERIMENTAL = 24;
 
-// Word Lamp palette: 10 entries, index 0-9. Index 0 renders as blank/off on
-// this PT -- clamp the coldest output to index 1, never 0, so a write
-// always shows something.
-constexpr uint8_t PALETTE_MIN_INDEX = 1;
-constexpr uint8_t PALETTE_MAX_INDEX = 9;
+  // Word Lamp palette: 10 entries, index 0-9. Index 0 renders as blank/off on
+  // this PT -- clamp the coldest output to index 1, never 0, so a write
+  // always shows something.
+  constexpr uint8_t PALETTE_MIN_INDEX = 1;
+  constexpr uint8_t PALETTE_MAX_INDEX = 9;
 
-// Display refresh decoupled from live camera streaming, velocity-adaptive
-// per-tube throttle (floor only -- see requestDisplayPush()).
-constexpr uint32_t TARGET_DISPLAY_REFRESH_MS = 2000;
+  // Display refresh decoupled from live camera streaming, velocity-adaptive
+  // per-tube throttle (floor only -- see requestDisplayPush()).
+  constexpr uint32_t TARGET_DISPLAY_REFRESH_MS = 2000;
 
-constexpr uint16_t TELEMETRY_BASE_ADDR = 100;
-constexpr uint16_t TELEMETRY_WORD_COUNT = 9;
-constexpr uint32_t TELEMETRY_WRITE_INTERVAL_MS = 250;
+  constexpr uint16_t TELEMETRY_BASE_ADDR = 100;
+  constexpr uint16_t TELEMETRY_WORD_COUNT = 9;
+  constexpr uint32_t TELEMETRY_WRITE_INTERVAL_MS = 250;
 
 // Low-rate read used only to keep the auto-fallback's RM success-rate
 // stats alive (see checkDisplayAutoFallback()) -- without some RM traffic
@@ -652,119 +735,119 @@ constexpr uint32_t TELEMETRY_WRITE_INTERVAL_MS = 250;
 // the CX-Designer project already uses $W10 for something else.
 #define NS12_ENABLE_RM_POLLING 1
 
-constexpr uint16_t HOTMELT_START_POSITION_ADDR = 11;
-constexpr uint16_t HOTMELT_END_POSITION_ADDR = 12;
-constexpr uint32_t RM_POLL_INTERVAL_MS = 1000; // operator input changes rarely -- no need to poll fast
+  constexpr uint16_t HOTMELT_START_POSITION_ADDR = 11;
+  constexpr uint16_t HOTMELT_END_POSITION_ADDR = 12;
+  constexpr uint32_t RM_POLL_INTERVAL_MS = 1000; // operator input changes rarely -- no need to poll fast
 
-constexpr uint16_t CURRENT_SCREEN_ADDR = 50;
+  constexpr uint16_t CURRENT_SCREEN_ADDR = 50;
 
-// Hard protocol ceiling, not a tuning knob: the WM/RM wire format's LL
-// field is exactly 2 decimal digits, so no single WM command can
-// legitimately carry more than 99 words -- sending more doesn't fail
-// loudly, it silently desyncs the frame. Also sizes the sendWM() stack
-// buffer; the largest real chunk today is 24 words (experimental 32x24
-// columns), so 99 leaves comfortable margin.
-constexpr uint16_t MAX_WM_WORDS = 99;
+  // Hard protocol ceiling, not a tuning knob: the WM/RM wire format's LL
+  // field is exactly 2 decimal digits, so no single WM command can
+  // legitimately carry more than 99 words -- sending more doesn't fail
+  // loudly, it silently desyncs the frame. Also sizes the sendWM() stack
+  // buffer; the largest real chunk today is 24 words (experimental 32x24
+  // columns), so 99 leaves comfortable margin.
+  constexpr uint16_t MAX_WM_WORDS = 99;
 
-// Same LL-field ceiling applied to WB (bit write). Only ever used for 5
-// lamp bits at once (BUTTON_COUNT) in this file, so this is a generous
-// margin, not a tight fit.
-constexpr uint16_t MAX_WB_BITS = 99;
+  // Same LL-field ceiling applied to WB (bit write). Only ever used for 5
+  // lamp bits at once (BUTTON_COUNT) in this file, so this is a generous
+  // margin, not a tight fit.
+  constexpr uint16_t MAX_WB_BITS = 99;
 
-// Spacing between successive column writes in the experimental 32x24 mode.
-//
-// Derived, not guessed: one column WM frame is ESC+'W'+'M'+'0' (4) +
-// 4-hex address (4) + 2-decimal count (2) + comma-separated hex data
-// (rows values, each 1 digit since palette indices are 0-9, plus
-// rows-1 commas) + CR (1). At MATRIX_ROWS_EXPERIMENTAL=24 that's 58 bytes;
-// at 8N1 (10 bits/byte) and BAUD=9600 that takes ~60.4ms to physically
-// drain off the wire. A fixed interval shorter than that would issue a new
-// column write before the previous one finished transmitting -- the same
-// "PT starved mid-write" failure mode column-pacing exists to avoid, just
-// recurring at smaller scale. Computed with a 50% margin so it stays
-// correct if BAUD or MATRIX_ROWS_EXPERIMENTAL ever change.
-constexpr uint16_t COLUMN_DATA_CHARS =
-    (uint16_t)MATRIX_ROWS_EXPERIMENTAL + ((uint16_t)MATRIX_ROWS_EXPERIMENTAL - 1);
-constexpr uint16_t COLUMN_FRAME_BYTES =
-    4 /*ESC W M '0'*/ + 4 /*hex addr*/ + 2 /*dec count*/ + COLUMN_DATA_CHARS + 1 /*CR*/;
-constexpr uint32_t COLUMN_FRAME_TX_TIME_US =
-    (uint32_t)COLUMN_FRAME_BYTES * 10UL * 1000000UL / (uint32_t)BAUD;
-constexpr uint32_t COLUMN_WRITE_INTERVAL_MS =
-    (COLUMN_FRAME_TX_TIME_US * 3UL / 2UL) / 1000UL + 1UL; // +50% margin, ceil to ms
+  // Spacing between successive column writes in the experimental 32x24 mode.
+  //
+  // Derived, not guessed: one column WM frame is ESC+'W'+'M'+'0' (4) +
+  // 4-hex address (4) + 2-decimal count (2) + comma-separated hex data
+  // (rows values, each 1 digit since palette indices are 0-9, plus
+  // rows-1 commas) + CR (1). At MATRIX_ROWS_EXPERIMENTAL=24 that's 58 bytes;
+  // at 8N1 (10 bits/byte) and BAUD=9600 that takes ~60.4ms to physically
+  // drain off the wire. A fixed interval shorter than that would issue a new
+  // column write before the previous one finished transmitting -- the same
+  // "PT starved mid-write" failure mode column-pacing exists to avoid, just
+  // recurring at smaller scale. Computed with a 50% margin so it stays
+  // correct if BAUD or MATRIX_ROWS_EXPERIMENTAL ever change.
+  constexpr uint16_t COLUMN_DATA_CHARS =
+      (uint16_t)MATRIX_ROWS_EXPERIMENTAL + ((uint16_t)MATRIX_ROWS_EXPERIMENTAL - 1);
+  constexpr uint16_t COLUMN_FRAME_BYTES =
+      4 /*ESC W M '0'*/ + 4 /*hex addr*/ + 2 /*dec count*/ + COLUMN_DATA_CHARS + 1 /*CR*/;
+  constexpr uint32_t COLUMN_FRAME_TX_TIME_US =
+      (uint32_t)COLUMN_FRAME_BYTES * 10UL * 1000000UL / (uint32_t)BAUD;
+  constexpr uint32_t COLUMN_WRITE_INTERVAL_MS =
+      (COLUMN_FRAME_TX_TIME_US * 3UL / 2UL) / 1000UL + 1UL; // +50% margin, ceil to ms
 
-//
-// COULD NOT VERIFY against the official Host Connection Manual (Cat. No.
-// V085-E1-07) -- WebFetch to every candidate manual/documentation host
-// was blocked by this sandbox's network egress policy. This was reasoned
-// from the available evidence, not confirmed against primary
-// documentation, at the time it was written.
-//
-// RM-only, deliberately NOT applied to WM (see sendWM): WM writes already
-// get transport-level acks with plain (unoffset) addresses -- there is no
-// evidence WM needs this offset, and applying an unverified offset to the
-// one path that already "works" would risk breaking known-good telemetry/
-// matrix traffic just to test a read-side hypothesis. If this offset turns
-// out to be real and WM also needs it, that's a separate, deliberate change
-// once RM confirms the theory -- not bundled in here.
-constexpr uint16_t RM_WORD_ADDRESS_OFFSET = 16384;
+  //
+  // COULD NOT VERIFY against the official Host Connection Manual (Cat. No.
+  // V085-E1-07) -- WebFetch to every candidate manual/documentation host
+  // was blocked by this sandbox's network egress policy. This was reasoned
+  // from the available evidence, not confirmed against primary
+  // documentation, at the time it was written.
+  //
+  // The HMI passes screen and position words at their plain $W addresses.
+  // Leave this at 0 unless the panel proves it needs an offset; adding a
+  // nonzero offset here breaks plain-address reads like $W50 and causes the
+  // current-screen value to look stale even when the HMI is sending it.
+  constexpr uint16_t RM_WORD_ADDRESS_OFFSET = 0;
 
-// Unused by requestRB()/sendWB() -- bit addresses ($B) take the plain
-// address, unlike words ($W) above. Left declared since other comments
-// in this file still refer to it by name.
-constexpr uint16_t RB_BIT_ADDRESS_OFFSET = 16384;
+  // Unused by requestRB()/sendWB() -- bit addresses ($B) take the plain
+  // address, unlike words ($W) above. Left declared since other comments
+  // in this file still refer to it by name.
+  constexpr uint16_t RB_BIT_ADDRESS_OFFSET = 16384;
 
-// HMI push-button inputs, confirmed from the real CX-Designer Symbol Table
-// (project 510_HotMel_20260902_1, I/O Comments "SETUP Button" / "ALARM LOG
-// Button" / "TREND FULL Button" / "TEST Button" / "DIAG Button").
-constexpr uint16_t BUTTON_SETUP_ADDR = 30;
-constexpr uint16_t BUTTON_ALARM_LOG_ADDR = 31;
-constexpr uint16_t BUTTON_TREND_FULL_ADDR = 32;
-constexpr uint16_t BUTTON_TEST_ADDR = 33;
-constexpr uint16_t BUTTON_DIAG_ADDR = 34;
-constexpr uint8_t BUTTON_COUNT = 5;
+  // HMI push-button inputs, confirmed from the real CX-Designer Symbol Table
+  // (project 510_HotMel_20260902_1, I/O Comments "SETUP Button" / "ALARM LOG
+  // Button" / "TREND FULL Button" / "TEST Button" / "DIAG Button").
 
-constexpr uint16_t LAMP_SETUP_ADDR = 40;
-constexpr uint16_t LAMP_ALARM_LOG_ADDR = 41;
-constexpr uint16_t LAMP_TREND_FULL_ADDR = 42;
-constexpr uint16_t LAMP_TEST_ADDR = 43;
-constexpr uint16_t LAMP_DIAG_ADDR = 44;
+  constexpr uint16_t BUTTON_TREND_FULL_ADDR = 30;
+  constexpr uint16_t BUTTON_SETUP_ADDR = 31;
+  constexpr uint16_t BUTTON_DIAG_ADDR = 32;
+  constexpr uint16_t BUTTON_TEST_ADDR = 33;
+  constexpr uint16_t BUTTON_ALARM_LOG_ADDR = 34;
+  constexpr uint8_t BUTTON_COUNT = 5;
 
-// Not part of the SETUP-group's mutually-exclusive bank (BUTTON_COUNT
-// above) -- a separate, independently-polled momentary button. Confirmed
-// from the Symbol Table ("Acknowledge" / "Acknowledge LAMP").
-constexpr uint16_t BUTTON_ACK_ADDR = 39;
-constexpr uint16_t LAMP_ACK_ADDR = 49;
+  constexpr uint16_t LAMP_TREND_FULL_ADDR = 40;
+  constexpr uint16_t LAMP_SETUP_ADDR = 41;
+  constexpr uint16_t LAMP_DIAG_ADDR = 42;
+  constexpr uint16_t LAMP_TEST_ADDR = 43;
+  constexpr uint16_t LAMP_ALARM_LOG_ADDR = 44;
 
-// Top-right FAIL button -- narrower than Acknowledge: only clears the
-// bad-tube flag (tubeIsBad/$B2), not FaultStop or the screen Enable
-// toggles. No dedicated lamp in the Symbol Table (unlike Acknowledge).
-constexpr uint16_t BUTTON_FAIL_ADDR = 38;
+  // Not part of the SETUP-group's mutually-exclusive bank (BUTTON_COUNT
+  // above) -- a separate, independently-polled momentary button. Confirmed
+  // from the Symbol Table ("Acknowledge" / "Acknowledge LAMP").
+  constexpr uint16_t BUTTON_ACK_ADDR = 39;
+  constexpr uint16_t LAMP_ACK_ADDR = 49;
 
-// Header status bits, confirmed from the Symbol Table -- outputs the ESP
-// writes, not inputs. $B2 "this Tube is BAD" mirrors FROM_PLC_COMM bit 2
-// (Pins::ESP_INPUT_3), which the PLC now drives with Keyence's pass/fail
-// result -- see servicePlcControl()'s tubeIsBad handling.
-constexpr uint16_t POWER_STATUS_ADDR = 0;   // "ESP Loop() is running" -- blinks
-constexpr uint16_t ESP_FAULTY_ADDR = 1;     // mirrors state == FaultStop
-constexpr uint16_t TUBE_BAD_ADDR = 2;       // mirrors FROM_PLC_COMM bit 2 (Keyence result via PLC)
-constexpr uint16_t OVERALL_ALARM_ADDR = 80; // OR of known subsystem failures, no latch
+  // Top-right FAIL button -- narrower than Acknowledge: only clears the
+  // bad-tube flag (tubeIsBad/$B2), not FaultStop or the screen Enable
+  // toggles. No dedicated lamp in the Symbol Table (unlike Acknowledge).
+  constexpr uint16_t BUTTON_FAIL_ADDR = 38;
 
-constexpr uint32_t BUTTON_POLL_INTERVAL_MS = 2000;
+  // Header status bits, confirmed from the Symbol Table -- outputs the ESP
+  // writes, not inputs. $B2 "this Tube is BAD" mirrors FROM_PLC_COMM bit 2
+  // (Pins::ESP_INPUT_3), which the PLC now drives with Keyence's pass/fail
+  // result -- see servicePlcControl()'s tubeIsBad handling.
+  constexpr uint16_t POWER_STATUS_ADDR = 0;   // "ESP Loop() is running" -- blinks
+  constexpr uint16_t ESP_FAULTY_ADDR = 1;     // mirrors state == FaultStop
+  constexpr uint16_t TUBE_BAD_ADDR = 2;       // mirrors FROM_PLC_COMM bit 2 (Keyence result via PLC)
+  constexpr uint16_t OVERALL_ALARM_ADDR = 80; // OR of known subsystem failures, no latch
 
-constexpr uint16_t DIAG_BUTTON_BASE_ADDR = 50;
-constexpr uint8_t DIAG_BUTTON_COUNT = 28;
-constexpr uint32_t DIAG_BUTTON_POLL_INTERVAL_MS = 2000; // safety-net only, same reasoning as BUTTON_POLL_INTERVAL_MS
+  constexpr uint32_t BUTTON_POLL_INTERVAL_MS = 2000;
 
-// User-added HMI bits, one per diag button, offset +500 from
-// DIAG_BUTTON_BASE_ADDR ($B550-$B577) -- a status/lamp bit the panel
-// renders on the button itself, since these 28 buttons have no physical
-// LED the way the 5 SETUP-group buttons do.
-constexpr uint16_t DIAG_LAMP_BASE_ADDR = DIAG_BUTTON_BASE_ADDR + 500;
+  constexpr uint16_t DIAG_BUTTON_BASE_ADDR = 50;
+  constexpr uint8_t DIAG_BUTTON_COUNT = 28;
+  constexpr uint32_t DIAG_BUTTON_POLL_INTERVAL_MS = 2000; // safety-net only, same reasoning as BUTTON_POLL_INTERVAL_MS
+
+  // User-added HMI bits, one per diag button, offset +500 from
+  // DIAG_BUTTON_BASE_ADDR ($B550-$B577) -- a status/lamp bit the panel
+  // renders on the button itself, since these 28 buttons have no physical
+  // LED the way the 5 SETUP-group buttons do.
+  constexpr uint16_t DIAG_LAMP_BASE_ADDR = DIAG_BUTTON_BASE_ADDR + 500;
 } // namespace NS12
 
-class NS12Manager {
+class NS12Manager
+{
 public:
-  void begin() {
+  void begin()
+  {
     Serial2.setTxBufferSize(1024);
     Serial2.begin(NS12::BAUD, SERIAL_8N1, Pins::NS12_RX, Pins::NS12_TX);
     lastTelemetryMs = millis();
@@ -775,8 +858,10 @@ public:
   // not a soft limit -- clamped defensively and counted as a failure so a
   // regression is visible in diagnostics instead of silently desyncing
   // the frame.
-  void sendWM(uint16_t startAddr, const uint16_t *data, uint16_t count) {
-    if (count > NS12::MAX_WM_WORDS) {
+  void sendWM(uint16_t startAddr, const uint16_t *data, uint16_t count)
+  {
+    if (count > NS12::MAX_WM_WORDS)
+    {
       count = NS12::MAX_WM_WORDS;
       wmOversizedCount++;
     }
@@ -792,8 +877,10 @@ public:
     n += writeHex4(&frame[n], startAddr);
     n += writeDecimal2(&frame[n], (uint8_t)count);
 
-    for (uint16_t i = 0; i < count; i++) {
-      if (i > 0) frame[n++] = ',';
+    for (uint16_t i = 0; i < count; i++)
+    {
+      if (i > 0)
+        frame[n++] = ',';
       n += writeHexCompact(&frame[n], data[i]);
     }
     frame[n++] = '\r';
@@ -801,14 +888,16 @@ public:
 #if NS12_DEBUG_RAW_RX
     Serial.print(F("[NS12] TX WM: "));
 
-    for (size_t i = 0; i < n; i++) printRawByte((uint8_t)frame[i]);
+    for (size_t i = 0; i < n; i++)
+      printRawByte((uint8_t)frame[i]);
     Serial.println();
 #endif
 
     wmAttempts++;
     size_t sent = Serial2.write(reinterpret_cast<uint8_t *>(frame), n);
 
-    if (sent != n) {
+    if (sent != n)
+    {
       // Partial write -- retry once immediately, picking up right after the
       // bytes that did make it into the driver's TX buffer. Still
       // non-blocking: Serial2.write() only falls short when that buffer is
@@ -816,7 +905,8 @@ public:
       sent += Serial2.write(reinterpret_cast<uint8_t *>(frame + sent), n - sent);
     }
 
-    if (sent != n) {
+    if (sent != n)
+    {
       // Frame never fully went out even after the retry -- the PT's copy of
       // this address range is now stale/blank and will stay that way until
       // the next push. Log addr/count so a recurring blank column on the
@@ -837,17 +927,18 @@ public:
   // to RM_READ_TIMEOUT_MS at a time this file now also drives hard-real-
   // time Keyence pulse timing and encoder tracking. Call service() every
   // loop() iteration to drive the response state machine.
-  bool requestRM(uint16_t startAddr, uint8_t count) {
-    if (readPending || count == 0 || count > 32) return false;
+  bool requestRM(uint16_t startAddr, uint8_t count)
+  {
+    if (readPending || count == 0 || count > 32)
+      return false;
     // See markTxBusy()'s comment: defer starting a read until any recent
     // WM/WB send is estimated to have actually finished draining off the
     // wire, not just been handed to Serial2.write().
-    if ((int32_t)(millis() - txBusyUntilMs) < 0) return false;
+    if ((int32_t)(millis() - txBusyUntilMs) < 0)
+      return false;
 
-    // See NS12::RM_WORD_ADDRESS_OFFSET -- currently 16384 under field test.
-    // wireAddr (not the caller's plain startAddr) is what's actually sent
-    // AND what the response is validated against below, since the PT would
-    // echo back whatever address it actually processed.
+    // wireAddr is the literal address sent on the wire. For this HMI, the
+    // screen and position words are plain $W addresses, so the offset is 0.
     uint16_t wireAddr = (uint16_t)(startAddr + NS12::RM_WORD_ADDRESS_OFFSET);
 
     char frame[16];
@@ -863,7 +954,8 @@ public:
 #if NS12_DEBUG_RAW_RX
     Serial.print(F("[NS12] TX RM: "));
 
-    for (size_t i = 0; i < n; i++) printRawByte((uint8_t)frame[i]);
+    for (size_t i = 0; i < n; i++)
+      printRawByte((uint8_t)frame[i]);
     Serial.println();
 #endif
 
@@ -871,7 +963,8 @@ public:
     purgeRxBeforeRequest();
     size_t sent = Serial2.write(reinterpret_cast<uint8_t *>(frame), n);
 
-    if (sent != n) {
+    if (sent != n)
+    {
       // Request itself never fully went out -- don't burn the full
       // RM_READ_TIMEOUT_MS waiting on a reply to a frame the PT never saw.
       rmWriteFailures++;
@@ -894,10 +987,13 @@ public:
   // word or bit, can ever be in flight), routed by pendingCmdType so the
   // response validates against 'B' instead of 'M' and completion counts
   // into the separate rb* counters.
-  bool requestRB(uint16_t startAddr, uint8_t count) {
-    if (readPending || count == 0 || count > 32) return false;
+  bool requestRB(uint16_t startAddr, uint8_t count)
+  {
+    if (readPending || count == 0 || count > 32)
+      return false;
 
-    if ((int32_t)(millis() - txBusyUntilMs) < 0) return false; // see markTxBusy()
+    if ((int32_t)(millis() - txBusyUntilMs) < 0)
+      return false; // see markTxBusy()
 
     uint16_t wireAddr = startAddr;
 
@@ -914,7 +1010,8 @@ public:
 #if NS12_DEBUG_RAW_RX
     Serial.print(F("[NS12] TX RB: "));
 
-    for (size_t i = 0; i < n; i++) printRawByte((uint8_t)frame[i]);
+    for (size_t i = 0; i < n; i++)
+      printRawByte((uint8_t)frame[i]);
     Serial.println();
 #endif
 
@@ -922,7 +1019,8 @@ public:
     purgeRxBeforeRequest();
     size_t sent = Serial2.write(reinterpret_cast<uint8_t *>(frame), n);
 
-    if (sent != n) {
+    if (sent != n)
+    {
       rbWriteFailures++;
       return false;
     }
@@ -939,8 +1037,10 @@ public:
 
   // WB: write `count` bits starting at `startAddr`. Fire-and-forget, same
   // shape as sendWM() -- no response expected.
-  void sendWB(uint16_t startAddr, const bool *bits, uint8_t count) {
-    if (count > NS12::MAX_WB_BITS) {
+  void sendWB(uint16_t startAddr, const bool *bits, uint8_t count)
+  {
+    if (count > NS12::MAX_WB_BITS)
+    {
       count = NS12::MAX_WB_BITS;
       wbOversizedCount++;
     }
@@ -955,13 +1055,16 @@ public:
     n += writeHex4(&frame[n], startAddr);
     n += writeDecimal2(&frame[n], count);
 
-    for (uint8_t d = 0; d < hexDigitCount; d++) {
+    for (uint8_t d = 0; d < hexDigitCount; d++)
+    {
       uint8_t nibble = 0;
 
-      for (uint8_t k = 0; k < 4; k++) {
+      for (uint8_t k = 0; k < 4; k++)
+      {
         uint8_t bitIndex = (uint8_t)(d * 4 + k);
 
-        if (bitIndex < count && bits[bitIndex]) {
+        if (bitIndex < count && bits[bitIndex])
+        {
           nibble = (uint8_t)(nibble | (1 << (3 - k)));
         }
       }
@@ -978,21 +1081,24 @@ public:
     Serial.print(n);
     Serial.print(F(" bytes): "));
 
-    for (size_t i = 0; i < n; i++) printRawByteAlways((uint8_t)frame[i]);
+    for (size_t i = 0; i < n; i++)
+      printRawByteAlways((uint8_t)frame[i]);
     Serial.println();
 #endif
 
     wbAttempts++;
     size_t sent = Serial2.write(reinterpret_cast<uint8_t *>(frame), n);
 
-    if (sent != n) {
+    if (sent != n)
+    {
       // Retry once immediately, same reasoning as sendWM()'s fix: a bit
       // write silently dropped here is exactly what leaves a button/lamp
       // LED stuck showing the wrong state until the next full press.
       sent += Serial2.write(reinterpret_cast<uint8_t *>(frame + sent), n - sent);
     }
 
-    if (sent != n) {
+    if (sent != n)
+    {
       wbFailures++;
       Serial.printf("[NS12] WB write failed: addr=0x%04X count=%u (%u/%u bytes sent)\n",
                     startAddr, (unsigned)count, (unsigned)sent, (unsigned)n);
@@ -1007,7 +1113,8 @@ public:
   // serviceHmiInputPolling() (see below), not from inside here -- this
   // just needs to keep pumping pollIncoming() regardless of who called
   // requestRM().
-  void service() {
+  void service()
+  {
     uint32_t now = millis();
 
     // Gated on !readPending: RM_READ_TIMEOUT_MS and
@@ -1021,7 +1128,8 @@ public:
     // this gating existed). This delays telemetry by at most one
     // RM_READ_TIMEOUT_MS window, not lost. Harmless no-op with RM polling
     // disabled (readPending then never becomes true).
-    if (!readPending && now - lastTelemetryMs >= NS12::TELEMETRY_WRITE_INTERVAL_MS) {
+    if (!readPending && now - lastTelemetryMs >= NS12::TELEMETRY_WRITE_INTERVAL_MS)
+    {
       lastTelemetryMs = now;
       sendWM(NS12::TELEMETRY_BASE_ADDR, telemetry, NS12::TELEMETRY_WORD_COUNT);
     }
@@ -1040,16 +1148,20 @@ public:
   // NS12::RM_WORD_ADDRESS_OFFSET) -- the offset, if any, stays entirely
   // internal to this class; external code never has to think about it, in
   // either direction.
-  bool consumeReadWord(uint16_t &addrOut, uint16_t &valueOut) {
-    if (!lastReadValid || lastReadKind != ReadKind::Word) return false;
+  bool consumeReadWord(uint16_t &addrOut, uint16_t &valueOut)
+  {
+    if (!lastReadValid || lastReadKind != ReadKind::Word)
+      return false;
     addrOut = (uint16_t)(lastReadAddrValue - NS12::RM_WORD_ADDRESS_OFFSET);
     valueOut = lastReadWordValue;
     lastReadValid = false;
     return true;
   }
 
-  bool consumeReadBit(uint16_t &addrOut, bool &valueOut, uint16_t &rawValueOut) {
-    if (!lastReadValid || lastReadKind != ReadKind::Bit) return false;
+  bool consumeReadBit(uint16_t &addrOut, bool &valueOut, uint16_t &rawValueOut)
+  {
+    if (!lastReadValid || lastReadKind != ReadKind::Bit)
+      return false;
     addrOut = lastReadAddrValue;
     rawValueOut = lastReadWordValue;
     valueOut = (lastReadWordValue & 0x80) != 0;
@@ -1058,8 +1170,9 @@ public:
   }
 
   void setTelemetry(uint16_t heartbeat, uint16_t fpsX10, uint16_t minX10, uint16_t maxX10,
-                     uint16_t avgX10, uint16_t goodFrames, uint16_t badFrames,
-                     uint16_t stateValue, uint16_t statusWord) {
+                    uint16_t avgX10, uint16_t goodFrames, uint16_t badFrames,
+                    uint16_t stateValue, uint16_t statusWord)
+  {
     telemetry[0] = heartbeat;
     telemetry[1] = fpsX10;
     telemetry[2] = minX10;
@@ -1079,7 +1192,11 @@ public:
   uint32_t wmAttemptCount() const { return wmAttempts; }
   uint32_t wmFailureCount() const { return wmFailures; }
   uint32_t wmOversizedCountValue() const { return wmOversizedCount; }
-  void resetRmStats() { rmAttempts = 0; rmSuccesses = 0; }
+  void resetRmStats()
+  {
+    rmAttempts = 0;
+    rmSuccesses = 0;
+  }
 
   uint32_t rbAttemptCount() const { return rbAttempts; }
   uint32_t rbSuccessCount() const { return rbSuccesses; }
@@ -1095,8 +1212,10 @@ public:
   // namespace for why a WM write during a pending RM read is suspect.
   bool isReadPending() const { return readPending; }
 
-  bool consumeNotifyBit(uint16_t &addrOut, bool &valueOut) {
-    if (!notifyValid) return false;
+  bool consumeNotifyBit(uint16_t &addrOut, bool &valueOut)
+  {
+    if (!notifyValid)
+      return false;
     addrOut = lastNotifyAddr;
     valueOut = lastNotifyValue;
     notifyValid = false;
@@ -1126,7 +1245,11 @@ private:
   // Set by parseReadResponse() on a successful parse, popped by
   // consumeReadWord() or consumeReadBit() depending on lastReadKind -- see
   // those methods' comments.
-  enum class ReadKind : uint8_t { Word, Bit };
+  enum class ReadKind : uint8_t
+  {
+    Word,
+    Bit
+  };
   bool lastReadValid = false;
   ReadKind lastReadKind = ReadKind::Word;
   uint16_t lastReadAddrValue = 0;
@@ -1152,7 +1275,8 @@ private:
 
   uint32_t txBusyUntilMs = 0;
 
-  void purgeRxBeforeRequest() {
+  void purgeRxBeforeRequest()
+  {
     pollIncoming(millis());
     readLineUsed = 0;
   }
@@ -1168,23 +1292,38 @@ private:
   // Non-blocking by construction: this only changes when requestRM()/
   // requestRB() are willing to start, never stalls loop() itself, so it
   // cannot introduce the Keyence 100us-pulse jitter a real flush() would.
-  void markTxBusy(size_t frameBytes) {
+  void markTxBusy(size_t frameBytes)
+  {
     uint32_t txMs = (uint32_t)((frameBytes * 10UL * 1000UL) / (uint32_t)NS12::BAUD) + 5UL;
     uint32_t now = millis();
     uint32_t baseline = ((int32_t)(txBusyUntilMs - now) > 0) ? txBusyUntilMs : now;
     txBusyUntilMs = baseline + txMs;
   }
 
-  static void printRawByte(uint8_t value) {
+  static void printRawByte(uint8_t value)
+  {
 #if NS12_DEBUG_RAW_RX
-    if (value == NS12::ESC) { Serial.print(F("[ESC]")); return; }
+    if (value == NS12::ESC)
+    {
+      Serial.print(F("[ESC]"));
+      return;
+    }
 
-    if (value == '\r') { Serial.print(F("[CR]")); return; }
+    if (value == '\r')
+    {
+      Serial.print(F("[CR]"));
+      return;
+    }
 
-    if (value >= 0x20 && value < 0x7F) { Serial.print((char)value); return; }
+    if (value >= 0x20 && value < 0x7F)
+    {
+      Serial.print((char)value);
+      return;
+    }
     Serial.print('[');
 
-    if (value < 0x10) Serial.print('0');
+    if (value < 0x10)
+      Serial.print('0');
     Serial.print(value, HEX);
     Serial.print(']');
 #else
@@ -1195,14 +1334,16 @@ private:
   // Unconditional (not gated by NS12_DEBUG_RAW_RX) -- a parse failure is
   // exactly the case that needs visibility by default. Non-static so it
   // can check pendingCmdType to name the right command letter below.
-  void dumpRejectedLine(const char *line, size_t len) {
+  void dumpRejectedLine(const char *line, size_t len)
+  {
     Serial.print(F("[NS12] R"));
     Serial.print(pendingCmdType);
     Serial.print(F(" parse failed, raw response ("));
     Serial.print(len);
     Serial.print(F(" bytes): "));
 
-    for (size_t i = 0; i < len; i++) {
+    for (size_t i = 0; i < len; i++)
+    {
       printRawByteAlways((uint8_t)line[i]);
     }
     Serial.println();
@@ -1212,61 +1353,91 @@ private:
     // shaped like one of OUR OWN WM/WB writes, most likely a loopback/echo
     // or a write that fired while this read was still pending. See the
     // field-report comment on the NS12 namespace.
-    if (len >= 3 && line[1] == 'W' && (line[2] == 'M' || line[2] == 'B')) {
+    if (len >= 3 && line[1] == 'W' && (line[2] == 'M' || line[2] == 'B'))
+    {
       Serial.print(F("[NS12]   ^ starts 'W',"));
       Serial.print(line[2]);
       Serial.print(F(" -- looks like our own W"));
       Serial.print(line[2]);
       Serial.println(F(" traffic, not a genuine reply. Check for TX/RX "
-                        "loopback or PT echo."));
+                       "loopback or PT echo."));
     }
   }
 
-  static void printRawByteAlways(uint8_t value) {
-    if (value == NS12::ESC) { Serial.print(F("[ESC]")); return; }
+  static void printRawByteAlways(uint8_t value)
+  {
+    if (value == NS12::ESC)
+    {
+      Serial.print(F("[ESC]"));
+      return;
+    }
 
-    if (value >= 0x20 && value < 0x7F) { Serial.print((char)value); return; }
+    if (value >= 0x20 && value < 0x7F)
+    {
+      Serial.print((char)value);
+      return;
+    }
     Serial.print('[');
 
-    if (value < 0x10) Serial.print('0');
+    if (value < 0x10)
+      Serial.print('0');
     Serial.print(value, HEX);
     Serial.print(']');
   }
 
-  void handleCompleteLine(const char *line, size_t len) {
-    if (len >= 3 && (uint8_t)line[0] == NS12::ESC && line[1] == 'S' && line[2] == 'B') {
-      if (parseNotifySB(line, len)) {
+  void handleCompleteLine(const char *line, size_t len)
+  {
+    if (len >= 3 && (uint8_t)line[0] == NS12::ESC && line[1] == 'S' && line[2] == 'B')
+    {
+      if (parseNotifySB(line, len))
+      {
         notifySbCount++;
-      } else {
+      }
+      else
+      {
         notifySbRejectedCount++;
       }
       return;
     }
 
-    if (!readPending) return;
+    if (!readPending)
+      return;
     bool isBit = (pendingCmdType == 'B');
 
-    if (parseReadResponse(line, len)) {
-      if (isBit) rbSuccesses++; else rmSuccesses++;
-    } else {
-      if (isBit) rbParseErrors++; else rmParseErrors++;
+    if (parseReadResponse(line, len))
+    {
+      if (isBit)
+        rbSuccesses++;
+      else
+        rmSuccesses++;
+    }
+    else
+    {
+      if (isBit)
+        rbParseErrors++;
+      else
+        rmParseErrors++;
       dumpRejectedLine(line, len);
     }
     readPending = false;
   }
 
-  void pollIncoming(uint32_t now) {
-    while (Serial2.available() > 0 && readLineUsed < sizeof(readLineBuffer) - 1) {
+  void pollIncoming(uint32_t now)
+  {
+    while (Serial2.available() > 0 && readLineUsed < sizeof(readLineBuffer) - 1)
+    {
       char ch = (char)Serial2.read();
 
       // A genuine frame always starts with ESC. Anything arriving before
       // that first ESC is stray (e.g. overlap with a WM write) and is
       // discarded rather than corrupting the line.
-      if (readLineUsed == 0 && (uint8_t)ch != NS12::ESC) {
+      if (readLineUsed == 0 && (uint8_t)ch != NS12::ESC)
+      {
         continue;
       }
 
-      if (ch == '\r') {
+      if (ch == '\r')
+      {
         readLineBuffer[readLineUsed] = '\0';
         handleCompleteLine(readLineBuffer, readLineUsed);
         readLineUsed = 0;
@@ -1276,17 +1447,26 @@ private:
       readLineBuffer[readLineUsed++] = ch;
     }
 
-    if (!readPending) return;
+    if (!readPending)
+      return;
 
-    if (readLineUsed >= sizeof(readLineBuffer) - 1) {
-      if (pendingCmdType == 'B') rbParseErrors++; else rmParseErrors++;
+    if (readLineUsed >= sizeof(readLineBuffer) - 1)
+    {
+      if (pendingCmdType == 'B')
+        rbParseErrors++;
+      else
+        rmParseErrors++;
       readPending = false;
       readLineUsed = 0;
       return;
     }
 
-    if (now - readSentMs > NS12::RM_READ_TIMEOUT_MS) {
-      if (pendingCmdType == 'B') rbTimeouts++; else rmTimeouts++;
+    if (now - readSentMs > NS12::RM_READ_TIMEOUT_MS)
+    {
+      if (pendingCmdType == 'B')
+        rbTimeouts++;
+      else
+        rmTimeouts++;
       readPending = false;
     }
   }
@@ -1300,24 +1480,30 @@ private:
   // lower byte of the sum of every byte from ESC through *D. Address is
   // the plain PT memory address, same as RB/WB -- bits never take the
   // $W-style offset.
-  bool parseNotifySB(const char *response, size_t len) {
+  bool parseNotifySB(const char *response, size_t len)
+  {
     if (len != 12 || (uint8_t)response[0] != NS12::ESC || response[1] != 'S' ||
-        response[2] != 'B') {
+        response[2] != 'B')
+    {
       return false;
     }
 
-    if (response[7] != '0' || response[8] != '1') return false; // *B always "01"
+    if (response[7] != '0' || response[8] != '1')
+      return false; // *B always "01"
     char d = response[9];
 
-    if (d != '0' && d != '1') return false;
+    if (d != '0' && d != '1')
+      return false;
 
     char sumText[3] = {response[10], response[11], '\0'};
     uint8_t receivedSum = (uint8_t)strtoul(sumText, nullptr, 16);
     uint8_t computedSum = 0;
 
-    for (size_t i = 0; i < 10; i++) computedSum += (uint8_t)response[i];
+    for (size_t i = 0; i < 10; i++)
+      computedSum += (uint8_t)response[i];
 
-    if (computedSum != receivedSum) return false;
+    if (computedSum != receivedSum)
+      return false;
 
     char addrText[5] = {response[3], response[4], response[5], response[6], '\0'};
     lastNotifyAddr = (uint16_t)strtoul(addrText, nullptr, 16);
@@ -1331,18 +1517,22 @@ private:
   // reads, distinguished by pendingCmdType (set in requestRM()/requestRB()).
   // The '0' echo has not been independently confirmed on this PT, so both
   // candidate offsets are tried; whichever validates wins.
-  bool parseReadResponse(const char *response, size_t len) {
+  bool parseReadResponse(const char *response, size_t len)
+  {
     if (len < 9 || (uint8_t)response[0] != NS12::ESC || response[1] != 'R' ||
-        response[2] != pendingCmdType) {
+        response[2] != pendingCmdType)
+    {
       return false;
     }
 
     static const uint8_t candidateOffsets[] = {3, 4};
 
-    for (uint8_t offset : candidateOffsets) {
+    for (uint8_t offset : candidateOffsets)
+    {
       size_t headerLen = (size_t)offset + 6;
 
-      if (len < headerLen) continue;
+      if (len < headerLen)
+        continue;
 
       char addrText[5] = {response[offset], response[offset + 1], response[offset + 2],
                           response[offset + 3], '\0'};
@@ -1350,31 +1540,37 @@ private:
       uint16_t addr = (uint16_t)strtoul(addrText, nullptr, 16);
       uint8_t count = (uint8_t)strtoul(countText, nullptr, 10);
 
-      if (addr != expectedAddr || count != expectedCount) continue;
+      if (addr != expectedAddr || count != expectedCount)
+        continue;
 
       size_t totalTailLen = len - headerLen;
 
-      if (totalTailLen < 3 || totalTailLen - 2 >= 8) continue; // >=1 data char + 2 sum chars
+      if (totalTailLen < 3 || totalTailLen - 2 >= 8)
+        continue; // >=1 data char + 2 sum chars
       size_t dataLen = totalTailLen - 2;
       char dataText[8];
       memcpy(dataText, &response[headerLen], dataLen);
       dataText[dataLen] = '\0';
       char *comma = strchr(dataText, ',');
 
-      if (comma) *comma = '\0';
+      if (comma)
+        *comma = '\0';
 
       char sumText[3] = {response[headerLen + dataLen], response[headerLen + dataLen + 1], '\0'};
       uint8_t receivedSum = (uint8_t)strtoul(sumText, nullptr, 16);
       uint8_t computedSum = 0;
 
-      for (size_t i = 0; i < headerLen + dataLen; i++) computedSum += (uint8_t)response[i];
+      for (size_t i = 0; i < headerLen + dataLen; i++)
+        computedSum += (uint8_t)response[i];
 
-      if (computedSum != receivedSum) continue;
+      if (computedSum != receivedSum)
+        continue;
 
       char *endPtr = nullptr;
       unsigned long parsedValue = strtoul(dataText, &endPtr, 16);
 
-      if (endPtr == dataText) continue;
+      if (endPtr == dataText)
+        continue;
 
       lastReadAddrValue = addr;
       lastReadWordValue = (uint16_t)parsedValue;
@@ -1398,7 +1594,8 @@ private:
       Serial.print(len);
       Serial.print(F(" bytes): "));
 
-      for (size_t i = 0; i < len; i++) printRawByteAlways((uint8_t)response[i]);
+      for (size_t i = 0; i < len; i++)
+        printRawByteAlways((uint8_t)response[i]);
       Serial.println();
 #endif
       return true;
@@ -1406,13 +1603,15 @@ private:
     return false;
   }
 
-  static size_t writeHex4(char *dst, uint16_t v) {
+  static size_t writeHex4(char *dst, uint16_t v)
+  {
     char tmp[5];
     snprintf(tmp, sizeof(tmp), "%04X", v);
     memcpy(dst, tmp, 4);
     return 4;
   }
-  static size_t writeDecimal2(char *dst, uint8_t v) {
+  static size_t writeDecimal2(char *dst, uint8_t v)
+  {
     char tmp[3];
     snprintf(tmp, sizeof(tmp), "%02u", v);
     memcpy(dst, tmp, 2);
@@ -1420,7 +1619,8 @@ private:
   }
   // Zero-suppressed hex (e.g. 0 -> "0", 10 -> "A") -- matches the comma-
   // separated, variable-width data encoding confirmed on the bench.
-  static size_t writeHexCompact(char *dst, uint16_t v) {
+  static size_t writeHexCompact(char *dst, uint16_t v)
+  {
     char tmp[5];
     int len = snprintf(tmp, sizeof(tmp), "%X", v);
     memcpy(dst, tmp, (size_t)len);
@@ -1435,18 +1635,23 @@ NS12Manager ns12;
 // the name (kept to minimize churn at call sites), this maps a raw-ADC-
 // delta value (see MATRIX_RAW_DELTA_MIN/MAX above), not degrees C.
 // =====================================================================
-uint8_t tempToPaletteIndex(float rawDelta) {
+uint8_t tempToPaletteIndex(float rawDelta)
+{
   float t = (rawDelta - MATRIX_RAW_DELTA_MIN) / (MATRIX_RAW_DELTA_MAX - MATRIX_RAW_DELTA_MIN);
 
-  if (t < 0) t = 0;
+  if (t < 0)
+    t = 0;
 
-  if (t > 1) t = 1;
+  if (t > 1)
+    t = 1;
   uint8_t idx = NS12::PALETTE_MIN_INDEX +
                 (uint8_t)(t * (NS12::PALETTE_MAX_INDEX - NS12::PALETTE_MIN_INDEX));
 
-  if (idx < NS12::PALETTE_MIN_INDEX) idx = NS12::PALETTE_MIN_INDEX;
+  if (idx < NS12::PALETTE_MIN_INDEX)
+    idx = NS12::PALETTE_MIN_INDEX;
 
-  if (idx > NS12::PALETTE_MAX_INDEX) idx = NS12::PALETTE_MAX_INDEX;
+  if (idx > NS12::PALETTE_MAX_INDEX)
+    idx = NS12::PALETTE_MAX_INDEX;
   return idx;
 }
 
@@ -1454,22 +1659,28 @@ uint8_t tempToPaletteIndex(float rawDelta) {
 // grid using max-per-block (matches the max-hold philosophy: don't average
 // away a hot pixel for HMI visibility).
 void downsampleMaxBlock(const float *src, uint8_t displayCols, uint8_t displayRows,
-                         float *dst) {
+                        float *dst)
+{
   uint8_t blockW = StripZone::COLS / displayCols;
   uint8_t blockH = StripZone::ROWS / displayRows;
 
-  for (uint8_t dc = 0; dc < displayCols; dc++) {
-    for (uint8_t dr = 0; dr < displayRows; dr++) {
+  for (uint8_t dc = 0; dc < displayCols; dc++)
+  {
+    for (uint8_t dr = 0; dr < displayRows; dr++)
+    {
       float m = -1000.0f;
 
-      for (uint8_t x = 0; x < blockW; x++) {
-        for (uint8_t y = 0; y < blockH; y++) {
+      for (uint8_t x = 0; x < blockW; x++)
+      {
+        for (uint8_t y = 0; y < blockH; y++)
+        {
           uint8_t sc = dc * blockW + x;
           uint8_t sr = dr * blockH + y;
           float v = src[sr * StripZone::COLS + sc];
           // Skip implausible pixels so one glitching pixel can't paint a
           // false hot spot on the HMI (see isPlausibleTemp()).
-          if (isPlausibleTemp(v) && v > m) m = v;
+          if (isPlausibleTemp(v) && v > m)
+            m = v;
         }
       }
       dst[dc * displayRows + dr] = m;
@@ -1490,12 +1701,16 @@ uint32_t currentDisplayRefreshMs = NS12::TARGET_DISPLAY_REFRESH_MS;
 bool displayPushQueued = false;
 float pendingDisplayFrame[StripZone::COLS * StripZone::ROWS];
 
-void requestDisplayPush(const float *frame) {
+void requestDisplayPush(const float *frame)
+{
+  if (continuousMlxTestMode)
+    return;
+
   uint32_t now = millis();
   uint32_t interTubeGapMs = now - lastTubeLatchMs;
   lastTubeLatchMs = now;
   currentDisplayRefreshMs = interTubeGapMs > MIN_DISPLAY_REFRESH_MS ? interTubeGapMs
-                                                                     : MIN_DISPLAY_REFRESH_MS;
+                                                                    : MIN_DISPLAY_REFRESH_MS;
   memcpy(pendingDisplayFrame, frame, sizeof(pendingDisplayFrame));
   displayPushQueued = true;
 }
@@ -1504,7 +1719,8 @@ void requestDisplayPush(const float *frame) {
 // words) is sent per COLUMN_WRITE_INTERVAL_MS tick from serviceMatrixPacing(),
 // instead of one 768-word burst -- the actual mitigation for the PT being
 // starved of time to service RM reads by one oversized write.
-struct PendingMatrixWrite {
+struct PendingMatrixWrite
+{
   bool active = false;
   uint8_t cols = 0, rows = 0;
   uint16_t words[NS12::MATRIX_COLS_EXPERIMENTAL * NS12::MATRIX_ROWS_EXPERIMENTAL];
@@ -1530,17 +1746,21 @@ uint16_t matrixPushCounter = 0;
 // 32x24 mode is starving RM reads.
 bool experimental32x24Effective = NS12::ENABLE_EXPERIMENTAL_32x24;
 
-void pushWordLampMatrix(const float *compositeFrame) {
+void pushWordLampMatrix(const float *compositeFrame)
+{
   uint8_t cols = experimental32x24Effective ? NS12::MATRIX_COLS_EXPERIMENTAL
-                                             : NS12::MATRIX_COLS_DEFAULT;
+                                            : NS12::MATRIX_COLS_DEFAULT;
   uint8_t rows = experimental32x24Effective ? NS12::MATRIX_ROWS_EXPERIMENTAL
-                                             : NS12::MATRIX_ROWS_DEFAULT;
+                                            : NS12::MATRIX_ROWS_DEFAULT;
 
   static float displayBuf[32 * 24];
 
-  if (cols == StripZone::COLS && rows == StripZone::ROWS) {
+  if (cols == StripZone::COLS && rows == StripZone::ROWS)
+  {
     memcpy(displayBuf, compositeFrame, sizeof(float) * cols * rows);
-  } else {
+  }
+  else
+  {
     downsampleMaxBlock(compositeFrame, cols, rows, displayBuf);
   }
 
@@ -1549,13 +1769,16 @@ void pushWordLampMatrix(const float *compositeFrame) {
   // $W828 (rows 1-4) / $W829 (rows 5-8) band-maximum layout at 16x8.
   float bandMax[2] = {-1000, -1000};
 
-  for (uint8_t c = 0; c < cols; c++) {
-    for (uint8_t r = 0; r < rows; r++) {
+  for (uint8_t c = 0; c < cols; c++)
+  {
+    for (uint8_t r = 0; r < rows; r++)
+    {
       float v = displayBuf[c * rows + r];
       words[c * rows + r] = tempToPaletteIndex(v);
       uint8_t half = (r < rows / 2) ? 0 : 1;
 
-      if (v > bandMax[half]) bandMax[half] = v;
+      if (v > bandMax[half])
+        bandMax[half] = v;
     }
   }
   uint16_t band01[2] = {(uint16_t)(bandMax[0] * 10), (uint16_t)(bandMax[1] * 10)};
@@ -1579,12 +1802,14 @@ void pushWordLampMatrix(const float *compositeFrame) {
   pendingMatrix.active = true;
 }
 
-void pushTestPattern() {
+void pushTestPattern()
+{
   static float testPattern[StripZone::COLS * StripZone::ROWS];
 
-  for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++) {
+  for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++)
+  {
     testPattern[i] = MATRIX_RAW_DELTA_MIN + (MATRIX_RAW_DELTA_MAX - MATRIX_RAW_DELTA_MIN) *
-                                                 ((float)i / (StripZone::COLS * StripZone::ROWS));
+                                                ((float)i / (StripZone::COLS * StripZone::ROWS));
   }
   pushWordLampMatrix(testPattern);
   Serial.println(F("[DIAG] Test pattern pushed. Send 'R' to clear it."));
@@ -1593,13 +1818,17 @@ void pushTestPattern() {
 // Called every loop() iteration; flushes a queued composite once the
 // current velocity-adaptive throttle interval (requestDisplayPush) has
 // elapsed.
-void serviceDisplayThrottle() {
-  if (!displayPushQueued) return;
+void serviceDisplayThrottle()
+{
+  if (!displayPushQueued)
+    return;
 
-  if (ns12.isReadPending()) return; // defer -- see field-report comment on NS12 namespace
+  if (ns12.isReadPending())
+    return; // defer -- see field-report comment on NS12 namespace
   uint32_t now = millis();
 
-  if (now - lastDisplayPushMs < currentDisplayRefreshMs) return;
+  if (now - lastDisplayPushMs < currentDisplayRefreshMs)
+    return;
   lastDisplayPushMs = now;
   displayPushQueued = false;
   pushWordLampMatrix(pendingDisplayFrame);
@@ -1609,13 +1838,17 @@ void serviceDisplayThrottle() {
 // active. Handles both the default 16x8 mode and experimental 32x24 --
 // pendingMatrix.cols/rows are set per-push in pushWordLampMatrix(), never
 // hardcoded here.
-void serviceMatrixPacing() {
-  if (!pendingMatrix.active) return;
+void serviceMatrixPacing()
+{
+  if (!pendingMatrix.active)
+    return;
 
-  if (ns12.isReadPending()) return; // defer -- see field-report comment on NS12 namespace
+  if (ns12.isReadPending())
+    return; // defer -- see field-report comment on NS12 namespace
   uint32_t now = millis();
 
-  if (now - pendingMatrix.lastWriteMs < NS12::COLUMN_WRITE_INTERVAL_MS) return;
+  if (now - pendingMatrix.lastWriteMs < NS12::COLUMN_WRITE_INTERVAL_MS)
+    return;
   pendingMatrix.lastWriteMs = now;
 
   uint8_t c = pendingMatrix.nextCol;
@@ -1623,7 +1856,8 @@ void serviceMatrixPacing() {
   ns12.sendWM(addr, &pendingMatrix.words[(size_t)c * pendingMatrix.rows], pendingMatrix.rows);
   pendingMatrix.nextCol++;
 
-  if (pendingMatrix.nextCol >= pendingMatrix.cols) {
+  if (pendingMatrix.nextCol >= pendingMatrix.cols)
+  {
     ns12.sendWM(pendingMatrix.bandAddr, pendingMatrix.band01, 2);
     matrixPushCounter++;
     ns12.sendWM((uint16_t)(pendingMatrix.bandAddr + 2), &matrixPushCounter, 1);
@@ -1634,17 +1868,21 @@ void serviceMatrixPacing() {
 // Self-monitor for the experimental 32x24 column-paced mode: if RM read
 // success rate collapses under real traffic, fall back to the trusted
 // 16x8 mode rather than keep pushing into a PT that can't service reads.
-void checkDisplayAutoFallback() {
-  if (!experimental32x24Effective) return;
+void checkDisplayAutoFallback()
+{
+  if (!experimental32x24Effective)
+    return;
 
-  if (ns12.rmAttemptCount() >= 50) {
+  if (ns12.rmAttemptCount() >= 50)
+  {
     float successRate = (float)ns12.rmSuccessCount() / (float)ns12.rmAttemptCount();
 
-    if (successRate < 0.5f) {
+    if (successRate < 0.5f)
+    {
       experimental32x24Effective = false;
       pendingMatrix.active = false; // abandon any in-flight paced push
       Serial.println(F("[NS12] WARNING: RM success rate collapsed under 32x24 "
-                        "traffic, falling back to 16x8 display mode."));
+                       "traffic, falling back to 16x8 display mode."));
     }
     ns12.resetRmStats();
   }
@@ -1662,32 +1900,45 @@ void checkDisplayAutoFallback() {
 // Max-hold composites the hottest value seen at each cell across the
 // whole transit.
 // =====================================================================
-enum class CaptureState { ARMED, SAMPLING, LATCHED };
+enum class CaptureState
+{
+  ARMED,
+  SAMPLING,
+  LATCHED
+};
 
-struct GlueStripResult {
+struct GlueStripResult
+{
   bool present = false;
   float maxTempC = 0;
   uint16_t hotPixelCount = 0;
 };
 
-class CaptureController {
+class CaptureController
+{
 public:
-  void rearm() {
+  void rearm()
+  {
     state = CaptureState::ARMED;
     sampleCount = 0;
   }
 
-  void onNewFrame(const float *frame) {
-    switch (state) {
-    case CaptureState::ARMED: {
+  void onNewFrame(const float *frame)
+  {
+    switch (state)
+    {
+    case CaptureState::ARMED:
+    {
       float maxT = frameMax(frame);
 
-      if (maxT >= CAPTURE_TRIGGER_RAW_DELTA) {
+      if (maxT >= CAPTURE_TRIGGER_RAW_DELTA)
+      {
         // Seed with -INFINITY for implausible pixels rather than copying
         // them verbatim -- otherwise a single glitching pixel elsewhere in
         // the trigger frame (not even the one that crossed the threshold)
         // would ride along into the QC composite and strip evaluation.
-        for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++) {
+        for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++)
+        {
           compositeFrame[i] = isPlausibleTemp(frame[i]) ? frame[i] : -INFINITY;
         }
         sampleCount = 1;
@@ -1695,15 +1946,19 @@ public:
       }
       break;
     }
-    case CaptureState::SAMPLING: {
-      for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++) {
-        if (isPlausibleTemp(frame[i]) && frame[i] > compositeFrame[i]) {
+    case CaptureState::SAMPLING:
+    {
+      for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++)
+      {
+        if (isPlausibleTemp(frame[i]) && frame[i] > compositeFrame[i])
+        {
           compositeFrame[i] = frame[i];
         }
       }
       sampleCount++;
 
-      if (sampleCount >= CAPTURE_SAMPLE_COUNT) {
+      if (sampleCount >= CAPTURE_SAMPLE_COUNT)
+      {
         evaluateStrips();
         state = CaptureState::LATCHED;
         requestDisplayPush(compositeFrame);
@@ -1735,32 +1990,42 @@ private:
   // CAPTURE_TRIGGER_RAW_DELTA, so a fully-glitched frame simply never
   // triggers rather than triggering on frame[0] regardless of its
   // validity (the previous version didn't check frame[0] at all).
-  static float frameMax(const float *frame) {
+  static float frameMax(const float *frame)
+  {
     float m = -INFINITY;
 
-    for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++) {
-      if (isPlausibleTemp(frame[i]) && frame[i] > m) m = frame[i];
+    for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++)
+    {
+      if (isPlausibleTemp(frame[i]) && frame[i] > m)
+        m = frame[i];
     }
     return m;
   }
 
-  void evaluateStrips() {
+  void evaluateStrips()
+  {
     strip1Result = evalStrip(StripZone::STRIP1_COL_START, StripZone::STRIP1_COL_END);
     strip2Result = evalStrip(StripZone::STRIP2_COL_START, StripZone::STRIP2_COL_END);
   }
 
-  GlueStripResult evalStrip(uint8_t colStart, uint8_t colEnd) {
+  GlueStripResult evalStrip(uint8_t colStart, uint8_t colEnd)
+  {
     GlueStripResult r;
 
-    for (uint8_t c = colStart; c <= colEnd; c++) {
-      for (uint8_t row = 0; row < StripZone::ROWS; row++) {
+    for (uint8_t c = colStart; c <= colEnd; c++)
+    {
+      for (uint8_t row = 0; row < StripZone::ROWS; row++)
+      {
         float v = compositeFrame[row * StripZone::COLS + c];
 
-        if (!isPlausibleTemp(v)) continue; // unfilled cell (-INFINITY seed) or stray glitch
+        if (!isPlausibleTemp(v))
+          continue; // unfilled cell (-INFINITY seed) or stray glitch
 
-        if (v > r.maxTempC) r.maxTempC = v;
+        if (v > r.maxTempC)
+          r.maxTempC = v;
 
-        if (v >= CAPTURE_TRIGGER_RAW_DELTA) r.hotPixelCount++;
+        if (v >= CAPTURE_TRIGGER_RAW_DELTA)
+          r.hotPixelCount++;
       }
     }
     r.present = r.hotPixelCount > 0;
@@ -1775,7 +2040,15 @@ CaptureController capture;
 // Startup -> Standby -> WaitingForTube -> InspectingTube / TubeGap ->
 // FaultStop
 // =====================================================================
-enum class SystemState { Startup, Standby, WaitingForTube, InspectingTube, TubeGap, FaultStop };
+enum class SystemState
+{
+  Startup,
+  Standby,
+  WaitingForTube,
+  InspectingTube,
+  TubeGap,
+  FaultStop
+};
 SystemState state = SystemState::Startup;
 SystemState lastLoggedState = SystemState::Startup;
 
@@ -1789,19 +2062,28 @@ uint32_t lastMlxFrameMs = 0;
 uint32_t lastDiagnosticMs = 0;
 uint32_t heartbeatCounter = 0;
 
-const char *stateName(SystemState s) {
-  switch (s) {
-  case SystemState::Startup: return "Startup";
-  case SystemState::Standby: return "Standby";
-  case SystemState::WaitingForTube: return "WaitingForTube";
-  case SystemState::InspectingTube: return "InspectingTube";
-  case SystemState::TubeGap: return "TubeGap";
-  case SystemState::FaultStop: return "FaultStop";
+const char *stateName(SystemState s)
+{
+  switch (s)
+  {
+  case SystemState::Startup:
+    return "Startup";
+  case SystemState::Standby:
+    return "Standby";
+  case SystemState::WaitingForTube:
+    return "WaitingForTube";
+  case SystemState::InspectingTube:
+    return "InspectingTube";
+  case SystemState::TubeGap:
+    return "TubeGap";
+  case SystemState::FaultStop:
+    return "FaultStop";
   }
   return "?";
 }
 
-void enterFaultStop() {
+void enterFaultStop()
+{
   state = SystemState::FaultStop;
 }
 
@@ -1811,19 +2093,23 @@ void enterFaultStop() {
 // of the tube's leading edge, using the encoder as the distance reference
 // and the presence sensor as the anchor.
 // =====================================================================
-void serviceTubePositionTracking() {
-  if (state != SystemState::InspectingTube) return;
+void serviceTubePositionTracking()
+{
+  if (state != SystemState::InspectingTube)
+    return;
 
   float travelledMm = (float)(encoder.total() - tubeStartEncoderCount) / ENCODER_COUNTS_PER_MM;
 
-  if (!tubeMlxArmed && travelledMm >= PRESENCE_TO_MLX_DISTANCE_MM) {
+  if (!tubeMlxArmed && travelledMm >= PRESENCE_TO_MLX_DISTANCE_MM)
+  {
     capture.rearm();
     tubeMlxArmed = true;
   }
 
   // Start-of-glue check: referenced from the LEADING edge, known
   // immediately -- fires from the very first tube.
-  if (!tubeKeyenceStartFired && travelledMm >= hotMeltStartPositionMm) {
+  if (!tubeKeyenceStartFired && travelledMm >= hotMeltStartPositionMm)
+  {
     keyenceTrigger.fire();
     tubeKeyenceStartFired = true;
   }
@@ -1834,10 +2120,12 @@ void serviceTubePositionTracking() {
   // handlePresenceEdge() below). Stays un-fired for the entire first
   // tube; from the second tube on, uses the previous tube's measured
   // length to compute where this tube's trailing edge will be.
-  if (tubeLengthLearned && !tubeKeyenceEndFired) {
+  if (tubeLengthLearned && !tubeKeyenceEndFired)
+  {
     float endTriggerMm = learnedTubeLengthMm - hotMeltEndPositionMm;
 
-    if (travelledMm >= endTriggerMm) {
+    if (travelledMm >= endTriggerMm)
+    {
       // Both checks share one KeyenceTrigger with a single pending-pulse
       // slot -- fine as long as Start/End are far enough apart in travel
       // distance to not overlap the 500us pulse, true for any plausible
@@ -1848,31 +2136,38 @@ void serviceTubePositionTracking() {
   }
 }
 
-void handlePresenceEdge() {
+void handlePresenceEdge()
+{
   bool rising = presenceState;
   presenceEdgePending = false;
 
-  if (rising) {
+  if (rising)
+  {
     // Leading edge -- new tube entering the zone.
-    if (state == SystemState::WaitingForTube || state == SystemState::TubeGap) {
+    if (state == SystemState::WaitingForTube || state == SystemState::TubeGap)
+    {
       state = SystemState::InspectingTube;
       tubeStartEncoderCount = encoder.total();
       tubeMlxArmed = false;
       tubeKeyenceStartFired = false;
       tubeKeyenceEndFired = false;
     }
-  } else {
+  }
+  else
+  {
     // Trailing edge -- tube has cleared the zone. Measure this tube's
     // length now (leading-to-trailing encoder distance) for the NEXT
     // tube's End-position projection -- see hotMeltEndPositionMm comment.
-    if (state == SystemState::InspectingTube) {
+    if (state == SystemState::InspectingTube)
+    {
       tubeEndEncoderCount = encoder.total();
       learnedTubeLengthMm =
           (float)(tubeEndEncoderCount - tubeStartEncoderCount) / ENCODER_COUNTS_PER_MM;
       bool hadNoEndCheck = !tubeKeyenceEndFired;
       tubeLengthLearned = true;
 
-      if (hadNoEndCheck) {
+      if (hadNoEndCheck)
+      {
         Serial.printf("[QC] Tube cleared without an End-position check -- measured length "
                       "%.1fmm now available for the next tube.\n",
                       learnedTubeLengthMm);
@@ -1884,6 +2179,7 @@ void handlePresenceEdge() {
 
 uint16_t currentScreenNumber = 0;
 bool currentScreenNumberValid = false;
+uint16_t lastScreenRefreshNumber = 0xFFFF;
 
 // =====================================================================
 // HMI input polling -- rotates a low-rate RM read between the two
@@ -1905,16 +2201,15 @@ int8_t wordVerifyIndex = -1;
 
 #if NS12_ENABLE_RM_POLLING
 constexpr uint16_t kButtonAddrs[NS12::BUTTON_COUNT] = {
-    NS12::BUTTON_SETUP_ADDR, NS12::BUTTON_ALARM_LOG_ADDR, NS12::BUTTON_TREND_FULL_ADDR,
-    NS12::BUTTON_TEST_ADDR, NS12::BUTTON_DIAG_ADDR};
-const char *const kButtonNames[NS12::BUTTON_COUNT] = {"SETUP", "ALARM LOG", "TREND FULL", "TEST",
-                                                       "DIAG"};
+    NS12::BUTTON_TREND_FULL_ADDR, NS12::BUTTON_SETUP_ADDR, NS12::BUTTON_DIAG_ADDR,
+    NS12::BUTTON_TEST_ADDR, NS12::BUTTON_ALARM_LOG_ADDR};
+const char *const kButtonNames[NS12::BUTTON_COUNT] = {"TREND FULL", "SETUP", "DIAG", "TEST", "ALARM LOG"};
 // On-screen lamp bit for each button above, confirmed from the Symbol
 // Table ("SETUP Button LAMP" etc, $B40-$B44) -- same +10 offset pattern as
 // the diag buttons' $B550-577, just not yet wired to a WB write until now.
 constexpr uint16_t kButtonLampAddrs[NS12::BUTTON_COUNT] = {
-    NS12::LAMP_SETUP_ADDR, NS12::LAMP_ALARM_LOG_ADDR, NS12::LAMP_TREND_FULL_ADDR,
-    NS12::LAMP_TEST_ADDR, NS12::LAMP_DIAG_ADDR};
+    NS12::LAMP_TREND_FULL_ADDR, NS12::LAMP_SETUP_ADDR, NS12::LAMP_DIAG_ADDR,
+    NS12::LAMP_TEST_ADDR, NS12::LAMP_ALARM_LOG_ADDR};
 // Index into kButtonNames/kButtonAddrs/mcpOutputState for the TEST screen's
 // own enable button -- every non-MAIN screen has one (same name as the
 // screen): its latched LED state (see toggleButtonStatusLed()) doubles as
@@ -1943,13 +2238,12 @@ constexpr char kDiagCommandChars[NS12::DIAG_BUTTON_COUNT] = {
     'S', 'W', 'I', 'G', 'F', '1', '2', '3', '4', '5', '6', '7', '8', '9',
     'A', 'K', 'P', 'M', 'C', 'B', 'X', 'R', 'D', 'H', 'V', 'J', 'N', 'L'};
 const char *const kDiagButtonNames[NS12::DIAG_BUTTON_COUNT] = {
-    "STANDBY",      "WAIT_TUBE",       "INSPECTING",  "TUBE_GAP",
-    "FAULT_STOP",   "IO1",             "IO2",         "IO3",
-    "IO4",          "IO5",             "IO6",         "IO7",
-    "IO8",          "IO9",             "YEL_LED_TEST", "KEYENCE_TRIG",
-    "PLC_STATUS",   "TEST_PATTERN",    "CAPTURE_REARM", "BASELINE_CAPTURE",
-    "FRAME_DUMP",   "REARM_BLANK",     "DIAGNOSTICS", "BURST_PROBE",
-    "WORD_VERIFY",  "WB_RB_SELFTEST",  "NO_OFFSET_TEST", "MLX_LIVE_TOGGLE"};
+    "STANDBY", "WAIT_TUBE", "INSPECTING", "TUBE_GAP", "FAULT_STOP",
+    "IO1", "IO2", "IO3", "IO4", "IO5",
+    "IO6", "IO7", "OPTO_1", "OPTO_2", "OPTO_3",
+    "KEYENCE_TRIG", "PLC_STATUS", "TEST_PATTERN", "CAPTURE_REARM", "BASELINE_CAPTURE",
+    "FRAME_DUMP", "REARM_BLANK", "DIAGNOSTICS", "BURST_PROBE", "WORD_VERIFY",
+    "WB_RB_SELFTEST", "NO_OFFSET_TEST", "MLX_LIVE_TOGGLE"};
 bool diagButtonState[NS12::DIAG_BUTTON_COUNT] = {};
 // Latched lamp state for each diag button's $B(550-577) status bit --
 // independent per button (unlike the SETUP-group's mutually-exclusive
@@ -1964,13 +2258,13 @@ bool diagLampState[NS12::DIAG_BUTTON_COUNT] = {};
 // state. Same 4-per-line layout as kDiagButtonNames above for side-by-
 // side auditing.
 constexpr bool kDiagLampAutoReset[NS12::DIAG_BUTTON_COUNT] = {
-    true,  true,  true,  true,   // STANDBY, WAIT_TUBE, INSPECTING, TUBE_GAP
-    true,  false, false, false,  // FAULT_STOP, IO1, IO2, IO3
-    false, false, false, false,  // IO4, IO5, IO6, IO7
-    false, false, false, true,   // IO8, IO9, YEL_LED_TEST, KEYENCE_TRIG
-    true,  true,  true,  true,   // PLC_STATUS, TEST_PATTERN, CAPTURE_REARM, BASELINE_CAPTURE
-    true,  true,  true,  true,   // FRAME_DUMP, REARM_BLANK, DIAGNOSTICS, BURST_PROBE
-    true,  true,  true,  false}; // WORD_VERIFY, WB_RB_SELFTEST, NO_OFFSET_TEST, MLX_LIVE_TOGGLE
+    true, true, true, true,     // STANDBY, WAIT_TUBE, INSPECTING, TUBE_GAP
+    true, false, false, false,  // FAULT_STOP, IO1, IO2, IO3
+    false, false, false, false, // IO4, IO5, IO6, IO7
+    false, false, false, true,  // OPTO_1, OPTO_2, OPTO_3, KEYENCE_TRIG
+    true, true, true, true,     // PLC_STATUS, TEST_PATTERN, CAPTURE_REARM, BASELINE_CAPTURE
+    true, true, true, true,     // FRAME_DUMP, REARM_BLANK, DIAGNOSTICS, BURST_PROBE
+    true, true, true, false};   // WORD_VERIFY, WB_RB_SELFTEST, NO_OFFSET_TEST, MLX_LIVE_TOGGLE
 constexpr uint32_t DIAG_LAMP_AUTO_RESET_MS = 1000;
 uint32_t diagLampAutoOffAtMs[NS12::DIAG_BUTTON_COUNT] = {};
 uint32_t lastDiagButtonPollMs = 0;
@@ -1991,23 +2285,49 @@ uint32_t diagButtonPressCount = 0;
 // and the gate is now independent of it.
 bool buttonEnableState[NS12::BUTTON_COUNT] = {};
 
-void setButtonStatusLed(uint8_t buttonIndex, bool on) {
-  if (buttonIndex >= NS12::BUTTON_COUNT) return;
+void clearFunctionButtonStates()
+{
+  for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++)
+  {
+    buttonEnableState[i] = false;
+    bool bit = false;
+    ns12.sendWB(kButtonLampAddrs[i], &bit, 1);
+  }
+}
+
+void refreshFunctionButtonLamps()
+{
+  for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++)
+  {
+    bool bit = buttonEnableState[i];
+    ns12.sendWB(kButtonLampAddrs[i], &bit, 1);
+  }
+}
+
+void setButtonStatusLed(uint8_t buttonIndex, bool on)
+{
+  if (buttonIndex >= NS12::BUTTON_COUNT)
+    return;
   buttonEnableState[buttonIndex] = on;
 
-  if (mcpOk) mcp.digitalWrite(kMcpOutputPins[buttonIndex], on);
-  // On-screen lamp bit is over the NS12 serial link, independent of MCP
-  // I2C health -- send it even if the physical LED write above was
-  // skipped.
-  ns12.sendWB(kButtonLampAddrs[buttonIndex], &buttonEnableState[buttonIndex], 1);
+  // These HMI function buttons drive only the HMI lamp bits. The physical
+  // enclosure LEDs remain under the separate MCP IO-test/status routines.
+  bool bit = buttonEnableState[buttonIndex];
+  ns12.sendWB(kButtonLampAddrs[buttonIndex], &bit, 1);
+
+  // Reassert the complete lamp set after each toggle so every function-button
+  // lamp matches the internal state exactly, even if the panel briefly latches
+  // a stale bit during a screen change or mutual-exclusion reset.
+  refreshFunctionButtonLamps();
 }
 
 // Flips a button's Enable state -- called once per momentary press, not
-// per raw bit level. Keyed only off NS12::BUTTON_COUNT/kButtonAddrs/
-// kMcpOutputPins, so any button added to those arrays later gets latching
-// LED behavior with no extra code here.
-void toggleButtonStatusLed(uint8_t buttonIndex) {
-  if (buttonIndex >= NS12::BUTTON_COUNT) return;
+// per raw bit level. It updates the function-button state and HMI lamp only,
+// without driving any physical enclosure LEDs.
+void toggleButtonStatusLed(uint8_t buttonIndex)
+{
+  if (buttonIndex >= NS12::BUTTON_COUNT)
+    return;
   setButtonStatusLed(buttonIndex, !buttonEnableState[buttonIndex]);
 }
 
@@ -2015,8 +2335,10 @@ void toggleButtonStatusLed(uint8_t buttonIndex) {
 // side equivalent of toggleButtonStatusLed() above, for buttons with no
 // physical LED. Same momentary-bit reasoning as the SETUP-group buttons:
 // called once per rising edge, not mirrored from the raw press level.
-void setDiagLamp(uint8_t diagIndex, bool on) {
-  if (diagIndex >= NS12::DIAG_BUTTON_COUNT) return;
+void setDiagLamp(uint8_t diagIndex, bool on)
+{
+  if (diagIndex >= NS12::DIAG_BUTTON_COUNT)
+    return;
   diagLampState[diagIndex] = on;
   ns12.sendWB((uint16_t)(NS12::DIAG_LAMP_BASE_ADDR + diagIndex), &diagLampState[diagIndex], 1);
 }
@@ -2025,13 +2347,18 @@ void setDiagLamp(uint8_t diagIndex, bool on) {
 // a one-shot command lights its lamp as a "the ESP saw this" confirmation
 // and schedules an automatic reset ~1s later (serviceDiagLampAutoReset()
 // below); a real persistent-output button just toggles and stays latched.
-void activateDiagLamp(uint8_t diagIndex) {
-  if (diagIndex >= NS12::DIAG_BUTTON_COUNT) return;
+void activateDiagLamp(uint8_t diagIndex)
+{
+  if (diagIndex >= NS12::DIAG_BUTTON_COUNT)
+    return;
 
-  if (kDiagLampAutoReset[diagIndex]) {
+  if (kDiagLampAutoReset[diagIndex])
+  {
     setDiagLamp(diagIndex, true);
     diagLampAutoOffAtMs[diagIndex] = millis() + DIAG_LAMP_AUTO_RESET_MS;
-  } else {
+  }
+  else
+  {
     setDiagLamp(diagIndex, !diagLampState[diagIndex]);
     diagLampAutoOffAtMs[diagIndex] = 0;
   }
@@ -2039,11 +2366,14 @@ void activateDiagLamp(uint8_t diagIndex) {
 
 // Called every loop() iteration -- turns off any momentary confirmation
 // lamp whose 1s window has elapsed.
-void serviceDiagLampAutoReset() {
+void serviceDiagLampAutoReset()
+{
   uint32_t now = millis();
 
-  for (uint8_t i = 0; i < NS12::DIAG_BUTTON_COUNT; i++) {
-    if (diagLampAutoOffAtMs[i] != 0 && (int32_t)(now - diagLampAutoOffAtMs[i]) >= 0) {
+  for (uint8_t i = 0; i < NS12::DIAG_BUTTON_COUNT; i++)
+  {
+    if (diagLampAutoOffAtMs[i] != 0 && (int32_t)(now - diagLampAutoOffAtMs[i]) >= 0)
+    {
       diagLampAutoOffAtMs[i] = 0;
       setDiagLamp(i, false);
     }
@@ -2086,17 +2416,54 @@ uint32_t buttonPressCount[NS12::BUTTON_COUNT] = {};
 //   consistency; move it out of servicePlcControl() if it ever needs to
 //   react faster than Standby/TubeGap allows.
 // =====================================================================
-namespace PlcComms {
-enum class PlcStatus : uint8_t { STOP = 0, ALARM = 1, WARNING = 2, READY = 3 };
+namespace PlcComms
+{
+  enum class PlcStatus : uint8_t
+  {
+    STOP = 0,
+    ALARM = 1,
+    WARNING = 2,
+    READY = 3
+  };
 
-void setStatus(PlcStatus s) {
-  uint8_t code = static_cast<uint8_t>(s);
-  digitalWrite(Pins::ESP_OPTO_3, (code >> 2) & 1);
+  bool testOutputState[3] = {};
 
-  if (!mcpOk) return;
-  mcp.digitalWrite(McpPin::OPTO_1, (code >> 0) & 1);
-  mcp.digitalWrite(McpPin::OPTO_2, (code >> 1) & 1);
-}
+  void setStatus(PlcStatus s)
+  {
+    uint8_t code = static_cast<uint8_t>(s);
+    testOutputState[0] = (code >> 0) & 1;
+    testOutputState[1] = (code >> 1) & 1;
+    testOutputState[2] = (code >> 2) & 1;
+
+    digitalWrite(Pins::ESP_OPTO_3, testOutputState[2]);
+
+    if (!mcpOk)
+      return;
+    mcp.digitalWrite(McpPin::OPTO_1, !testOutputState[0]);
+    mcp.digitalWrite(McpPin::OPTO_2, !testOutputState[1]);
+  }
+
+  void toggleTestBit(uint8_t bit)
+  {
+    if (bit >= 3)
+      return;
+    testOutputState[bit] = !testOutputState[bit];
+
+    if (bit == 0)
+    {
+      if (mcpOk)
+        mcp.digitalWrite(McpPin::OPTO_1, !testOutputState[bit]);
+    }
+    else if (bit == 1)
+    {
+      if (mcpOk)
+        mcp.digitalWrite(McpPin::OPTO_2, !testOutputState[bit]);
+    }
+    else
+    {
+      digitalWrite(Pins::ESP_OPTO_3, testOutputState[bit]);
+    }
+  }
 } // namespace PlcComms
 
 bool plcAcknowledge = false;
@@ -2111,15 +2478,20 @@ bool powerStatusState = false;
 bool espFaultyLastSent = false;
 bool overallAlarmLastSent = false;
 
-void serviceHmiInputPolling() {
+void serviceHmiInputPolling()
+{
 #if NS12_ENABLE_RM_POLLING
   uint32_t now = millis();
 
-  if (wordVerifyIndex >= 0) {
-    if (!ns12.isReadPending()) {
+  if (wordVerifyIndex >= 0)
+  {
+    if (!ns12.isReadPending())
+    {
       ns12.requestRM((uint16_t)(30 + wordVerifyIndex), 1);
     }
-  } else if (!ns12.isReadPending() && now - lastHmiPollMs >= NS12::RM_POLL_INTERVAL_MS) {
+  }
+  else if (!ns12.isReadPending() && now - lastHmiPollMs >= NS12::RM_POLL_INTERVAL_MS)
+  {
     lastHmiPollMs = now;
     static const uint16_t kHmiPollAddrs[3] = {
         NS12::HOTMELT_START_POSITION_ADDR, NS12::HOTMELT_END_POSITION_ADDR,
@@ -2130,28 +2502,43 @@ void serviceHmiInputPolling() {
 
   uint16_t addr, value;
 
-  if (ns12.consumeReadWord(addr, value)) {
-    if (wordVerifyIndex >= 0 && addr == (uint16_t)(30 + wordVerifyIndex)) {
-      static const char *const kVerifyNames[5] = {"SETUP", "ALARM LOG", "TREND FULL", "TEST",
-                                                    "DIAG"};
+  if (ns12.consumeReadWord(addr, value))
+  {
+    if (wordVerifyIndex >= 0 && addr == (uint16_t)(30 + wordVerifyIndex))
+    {
+      static const char *const kVerifyNames[5] = {"SETUP", "ALARM LOG", "TREND FULL", "TEST", "DIAG"};
       Serial.printf("[WORD-VERIFY] RM $W%u (%s) = 0x%04X\n", (unsigned)(30 + wordVerifyIndex),
                     kVerifyNames[wordVerifyIndex], value);
       wordVerifyIndex++;
 
-      if (wordVerifyIndex >= 5) {
+      if (wordVerifyIndex >= 5)
+      {
         wordVerifyIndex = -1;
         Serial.println(F("[WORD-VERIFY] Done -- compare these 5 values against the "
-                          "[HMI-RAW] lines for the same buttons."));
+                         "[HMI-RAW] lines for the same buttons."));
       }
-    } else if (addr == NS12::HOTMELT_START_POSITION_ADDR) {
+    }
+    else if (addr == NS12::HOTMELT_START_POSITION_ADDR)
+    {
       hotMeltStartPositionMm = (float)value * HMI_POSITION_MM_PER_COUNT;
       hotMeltPositionsFromHmi = true;
-    } else if (addr == NS12::HOTMELT_END_POSITION_ADDR) {
+    }
+    else if (addr == NS12::HOTMELT_END_POSITION_ADDR)
+    {
       hotMeltEndPositionMm = (float)value * HMI_POSITION_MM_PER_COUNT;
       hotMeltPositionsFromHmi = true;
-    } else if (addr == NS12::CURRENT_SCREEN_ADDR) {
+    }
+    else if (addr == NS12::CURRENT_SCREEN_ADDR)
+    {
+      uint16_t previousScreenNumber = currentScreenNumber;
       currentScreenNumber = value;
       currentScreenNumberValid = true;
+
+      if (value != previousScreenNumber || !currentScreenNumberValid)
+      {
+        clearFunctionButtonStates();
+        refreshFunctionButtonLamps();
+      }
     }
   }
 #endif
@@ -2161,55 +2548,73 @@ void serviceHmiInputPolling() {
 // Telemetry helpers -- feed the NS12 $W100-$W108 block every loop (the
 // manager only actually transmits it every NS12::TELEMETRY_WRITE_INTERVAL_MS).
 // =====================================================================
-uint16_t toUnsignedX10(float value) {
-  if (!isfinite(value) || value <= 0.0f) return 0;
-  if (value >= 6553.5f) return 65535;
+uint16_t toUnsignedX10(float value)
+{
+  if (!isfinite(value) || value <= 0.0f)
+    return 0;
+  if (value >= 6553.5f)
+    return 65535;
   return (uint16_t)(value * 10.0f + 0.5f);
 }
 
-uint16_t buildStatusWord() {
+uint16_t buildStatusWord()
+{
   uint16_t status = 0;
 
-  if (mlxDetected) status |= (1u << 0);
+  if (mlxDetected)
+    status |= (1u << 0);
 
-  if (mlxInitialized) status |= (1u << 1);
+  if (mlxInitialized)
+    status |= (1u << 1);
 
-  if (lastFrameValid) status |= (1u << 2);
+  if (lastFrameValid)
+    status |= (1u << 2);
 
-  if (mcpOk) status |= (1u << 3);
+  if (mcpOk)
+    status |= (1u << 3);
 
-  if (state == SystemState::FaultStop) status |= (1u << 15);
+  if (state == SystemState::FaultStop)
+    status |= (1u << 15);
   return status;
 }
 
 // =====================================================================
 // Periodic Serial diagnostic report.
 // =====================================================================
-void printDiagnostics() {
+void printDiagnostics()
+{
   Serial.println();
   Serial.println(F("---- DIAGNOSTICS ----"));
   Serial.printf("State              : %s\n", stateName(state));
 
-  if (!mcpOk) Serial.println(F("MCP initialized    : NO"));
+  if (!mcpOk)
+    Serial.println(F("MCP initialized    : NO"));
 
-  if (!mlxDetected) Serial.println(F("Camera detected    : NO"));
+  if (!mlxDetected)
+    Serial.println(F("Camera detected    : NO"));
 
-  if (!mlxInitialized) Serial.println(F("Camera initialized : NO"));
+  if (!mlxInitialized)
+    Serial.println(F("Camera initialized : NO"));
 
-  if (!lastFrameValid) Serial.println(F("Last frame         : FAILED"));
+  if (!lastFrameValid)
+    Serial.println(F("Last frame         : FAILED"));
   Serial.printf("Measured FPS       : %.2f\n", measuredFramesPerSecond);
 
-  if (rawBaselineCaptureInProgress) {
+  if (rawBaselineCaptureInProgress)
+  {
     Serial.printf("Raw baseline       : capturing now... (%u/%u frames, previous baseline %s)\n",
                   rawBaselineFramesCollected, RAW_BASELINE_FRAME_COUNT,
                   rawBaselineCaptured ? "still in use until this completes" : "none yet -- stats frozen");
-  } else if (!rawBaselineCaptured) {
+  }
+  else if (!rawBaselineCaptured)
+  {
     Serial.println(F("Raw baseline       : NOT CAPTURED (send 'B')"));
   }
   Serial.printf("Min/Max/Avg raw delta : %.0f / %.0f / %.0f\n",
                 minimumTemperatureC, maximumTemperatureC, averageTemperatureC);
 
-  if (lastFrameRejectedPixelCount != 0) {
+  if (lastFrameRejectedPixelCount != 0)
+  {
     Serial.printf("Implausible pixels : %u (outside %.0f..%.0f raw delta, rejected)\n",
                   lastFrameRejectedPixelCount, MIN_PLAUSIBLE_RAW_DELTA, MAX_PLAUSIBLE_RAW_DELTA);
   }
@@ -2218,10 +2623,11 @@ void printDiagnostics() {
   Serial.printf("Encoder count (raw/mm) : %lld / %.1f\n", (long long)encoder.total(),
                 (float)encoder.total() / ENCODER_COUNTS_PER_MM);
 
-  if (capture.currentState() != CaptureState::ARMED) {
+  if (capture.currentState() != CaptureState::ARMED)
+  {
     const char *captureStateStr = (capture.currentState() == CaptureState::SAMPLING)
-                                       ? "SAMPLING"
-                                       : "LATCHED";
+                                      ? "SAMPLING"
+                                      : "LATCHED";
     Serial.printf("Capture state      : %s\n", captureStateStr);
   }
   Serial.printf("Strip1 present/maxT/hotPx : %d / %.1f / %u\n",
@@ -2256,7 +2662,8 @@ void printDiagnostics() {
                 plcMachineRunning, tubeIsBad);
   Serial.print(F("Screen Enable toggles ($B30-34)   : "));
 
-  for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++) {
+  for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++)
+  {
     Serial.printf("%s=%s%s", kButtonNames[i], buttonEnableState[i] ? "ON" : "off",
                   (i + 1 < NS12::BUTTON_COUNT) ? "  " : "\n");
   }
@@ -2264,15 +2671,21 @@ void printDiagnostics() {
                 hotMeltStartPositionMm, hotMeltEndPositionMm,
                 hotMeltPositionsFromHmi ? "from HMI" : "PLACEHOLDER fallback, not from HMI yet");
 
-  if (currentScreenNumberValid) {
+  if (currentScreenNumberValid)
+  {
     Serial.printf("Current HMI screen : %u\n", (unsigned)currentScreenNumber);
-  } else {
+  }
+  else
+  {
     Serial.println(F("Current HMI screen : not yet read ($W50)"));
   }
 
-  if (tubeLengthLearned) {
+  if (tubeLengthLearned)
+  {
     Serial.printf("Tube length          : %.1f mm (from previous tube)\n", learnedTubeLengthMm);
-  } else {
+  }
+  else
+  {
     Serial.println(F("Tube length          : not yet learned (no tube has cleared the sensor yet)"));
   }
   Serial.printf("Free heap          : %.1f kB\n", ESP.getFreeHeap() / 1024.0f);
@@ -2289,7 +2702,8 @@ void printDiagnostics() {
 // ALARM LOG/TREND FULL never had a subsystem to act on and still don't;
 // each just gets its own status LED as physical confirmation (see
 // setButtonStatusLed()'s comment).
-void handleHmiButtonPress(uint8_t index) {
+void handleHmiButtonPress(uint8_t index)
+{
   buttonPressCount[index]++;
   Serial.printf("[HMI] %s button pressed.\n", kButtonNames[index]);
 }
@@ -2298,19 +2712,25 @@ void handleHmiButtonPress(uint8_t index) {
 // for rising-edge detection -- the LED itself is latched by
 // toggleButtonStatusLed(), not mirrored from this bit, since a momentary
 // press would otherwise light the LED only while the screen is held down.
-void applyButtonBitUpdate(uint8_t i, bool pressed) {
+void applyButtonBitUpdate(uint8_t i, bool pressed)
+{
   bool wasPressed = buttonState[i];
   buttonState[i] = pressed;
 
-  if (pressed && !wasPressed) {
+  if (pressed && !wasPressed)
+  {
     toggleButtonStatusLed(i);
     Serial.printf("[SWITCH] %s -> %s\n", kButtonNames[i], buttonEnableState[i] ? "ON" : "OFF");
 
-    for (uint8_t j = 0; j < NS12::BUTTON_COUNT; j++) {
-      if (j == i || !buttonEnableState[j]) continue;
+    for (uint8_t j = 0; j < NS12::BUTTON_COUNT; j++)
+    {
+      if (j == i || !buttonEnableState[j])
+        continue;
       bool offBit = false;
-      ns12.sendWB(kButtonAddrs[j], &offBit, 1);
-      setButtonStatusLed(j, false);
+      ns12.sendWB(kButtonAddrs[j], &offBit, 1); // keep raw HMI button bits mutually exclusive
+      setButtonStatusLed(j, false);             // force exact HMI lamp OFF state to match logical state
+      bool lampOff = false;
+      ns12.sendWB(kButtonLampAddrs[j], &lampOff, 1); // explicitly reassert the lamp bit, avoid stale panel state
       Serial.printf("[SWITCH] %s -> OFF (reset by %s)\n", kButtonNames[j], kButtonNames[i]);
     }
     handleHmiButtonPress(i);
@@ -2322,19 +2742,24 @@ void applyButtonBitUpdate(uint8_t i, bool pressed) {
 // "reset to a known safe state", not just a fault clear. One-shot, so its
 // lamp flashes to confirm receipt and auto-resets (serviceAckLampAutoReset()
 // below), the same reasoning as the 17 momentary diag-button lamps.
-void applyAckButtonUpdate(bool pressed) {
+void applyAckButtonUpdate(bool pressed)
+{
   bool wasPressed = ackButtonState;
   ackButtonState = pressed;
 
-  if (pressed && !wasPressed) {
+  if (pressed && !wasPressed)
+  {
     Serial.println(F("[SWITCH] ACKNOWLEDGE -> pressed"));
 
-    if (state == SystemState::FaultStop) {
+    if (state == SystemState::FaultStop)
+    {
       state = SystemState::Standby;
     }
 
-    for (uint8_t j = 0; j < NS12::BUTTON_COUNT; j++) {
-      if (!buttonEnableState[j]) continue;
+    for (uint8_t j = 0; j < NS12::BUTTON_COUNT; j++)
+    {
+      if (!buttonEnableState[j])
+        continue;
       bool offBit = false;
       ns12.sendWB(kButtonAddrs[j], &offBit, 1);
       setButtonStatusLed(j, false);
@@ -2347,8 +2772,10 @@ void applyAckButtonUpdate(bool pressed) {
   }
 }
 
-void serviceAckLampAutoReset() {
-  if (ackLampAutoOffAtMs != 0 && (int32_t)(millis() - ackLampAutoOffAtMs) >= 0) {
+void serviceAckLampAutoReset()
+{
+  if (ackLampAutoOffAtMs != 0 && (int32_t)(millis() - ackLampAutoOffAtMs) >= 0)
+  {
     ackLampAutoOffAtMs = 0;
     ackLampState = false;
     ns12.sendWB(NS12::LAMP_ACK_ADDR, &ackLampState, 1);
@@ -2362,22 +2789,27 @@ void serviceAckLampAutoReset() {
 // the PLC hasn't also dropped its signal, the very next poll will set
 // tubeIsBad back to true right after this clears it. Acking here is a
 // local display clear, not a guarantee the condition is gone.
-void applyFailButtonUpdate(bool pressed) {
+void applyFailButtonUpdate(bool pressed)
+{
   bool wasPressed = failButtonState;
   failButtonState = pressed;
 
-  if (pressed && !wasPressed) {
+  if (pressed && !wasPressed)
+  {
     Serial.println(F("[SWITCH] FAIL -> pressed (clearing tubeIsBad)"));
     tubeIsBad = false;
     ns12.sendWB(NS12::TUBE_BAD_ADDR, &tubeIsBad, 1);
   }
 }
 
-bool addrToDiagIndex(uint16_t addr, uint8_t &indexOut) {
-  if (addr < NS12::DIAG_BUTTON_BASE_ADDR) return false;
+bool addrToDiagIndex(uint16_t addr, uint8_t &indexOut)
+{
+  if (addr < NS12::DIAG_BUTTON_BASE_ADDR)
+    return false;
   uint16_t idx = addr - NS12::DIAG_BUTTON_BASE_ADDR;
 
-  if (idx >= NS12::DIAG_BUTTON_COUNT) return false;
+  if (idx >= NS12::DIAG_BUTTON_COUNT)
+    return false;
   indexOut = (uint8_t)idx;
   return true;
 }
@@ -2391,14 +2823,17 @@ bool addrToDiagIndex(uint16_t addr, uint8_t &indexOut) {
 // keep in sync.
 void handleSerialCommand(char c);
 
-void applyDiagButtonUpdate(uint8_t i, bool pressed) {
+void applyDiagButtonUpdate(uint8_t i, bool pressed)
+{
   bool wasPressed = diagButtonState[i];
   diagButtonState[i] = pressed;
 
-  if (pressed && !wasPressed) {
+  if (pressed && !wasPressed)
+  {
     // These 28 buttons live on the TEST screen -- ignore presses while its
     // own enable toggle is off (screen is "just a display" until armed).
-    if (!buttonEnableState[BUTTON_TEST_INDEX]) {
+    if (!buttonEnableState[BUTTON_TEST_INDEX])
+    {
       Serial.printf("[HMI-DIAG] %s ($B%u) ignored -- TEST screen not enabled\n",
                     kDiagButtonNames[i], (unsigned)(NS12::DIAG_BUTTON_BASE_ADDR + i));
       return;
@@ -2412,7 +2847,8 @@ void applyDiagButtonUpdate(uint8_t i, bool pressed) {
 }
 #endif
 
-void serviceHmiButtonPolling() {
+void serviceHmiButtonPolling()
+{
 #if NS12_ENABLE_RM_POLLING
   serviceDiagLampAutoReset();
   serviceAckLampAutoReset();
@@ -2421,43 +2857,55 @@ void serviceHmiButtonPolling() {
   uint16_t notifyAddr;
   bool notifyPressed;
 
-  if (ns12.consumeNotifyBit(notifyAddr, notifyPressed)) {
+  if (ns12.consumeNotifyBit(notifyAddr, notifyPressed))
+  {
     bool matched = false;
 
-    for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++) {
-      if (kButtonAddrs[i] != notifyAddr) continue;
+    for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++)
+    {
+      if (kButtonAddrs[i] != notifyAddr)
+        continue;
       applyButtonBitUpdate(i, notifyPressed);
       matched = true;
       break;
     }
 
-    if (!matched && notifyAddr == NS12::BUTTON_ACK_ADDR) {
+    if (!matched && notifyAddr == NS12::BUTTON_ACK_ADDR)
+    {
       applyAckButtonUpdate(notifyPressed);
       matched = true;
     }
 
-    if (!matched && notifyAddr == NS12::BUTTON_FAIL_ADDR) {
+    if (!matched && notifyAddr == NS12::BUTTON_FAIL_ADDR)
+    {
       applyFailButtonUpdate(notifyPressed);
       matched = true;
     }
 
-    if (!matched) {
+    if (!matched)
+    {
       uint8_t diagIndex;
 
-      if (addrToDiagIndex(notifyAddr, diagIndex)) {
+      if (addrToDiagIndex(notifyAddr, diagIndex))
+      {
         applyDiagButtonUpdate(diagIndex, notifyPressed);
       }
     }
   }
 
-  if (noOffsetTestPending) {
-    if (!ns12.isReadPending() && ns12.requestRB(noOffsetTestAddr, 1)) {
+  if (noOffsetTestPending)
+  {
+    if (!ns12.isReadPending() && ns12.requestRB(noOffsetTestAddr, 1))
+    {
       noOffsetTestPending = false;
     }
-  } else {
+  }
+  else
+  {
     uint32_t pollInterval = (now < burstProbeUntilMs) ? 0 : NS12::BUTTON_POLL_INTERVAL_MS;
 
-    if (!ns12.isReadPending() && now - lastButtonPollMs >= pollInterval) {
+    if (!ns12.isReadPending() && now - lastButtonPollMs >= pollInterval)
+    {
       lastButtonPollMs = now;
       ns12.requestRB(kButtonAddrs[nextButtonPollIndex], 1);
       nextButtonPollIndex = (nextButtonPollIndex + 1) % NS12::BUTTON_COUNT;
@@ -2465,19 +2913,22 @@ void serviceHmiButtonPolling() {
   }
 
   if (!noOffsetTestPending && !ns12.isReadPending() &&
-      now - lastAckPollMs >= NS12::BUTTON_POLL_INTERVAL_MS) {
+      now - lastAckPollMs >= NS12::BUTTON_POLL_INTERVAL_MS)
+  {
     lastAckPollMs = now;
     ns12.requestRB(NS12::BUTTON_ACK_ADDR, 1);
   }
 
   if (!noOffsetTestPending && !ns12.isReadPending() &&
-      now - lastFailPollMs >= NS12::BUTTON_POLL_INTERVAL_MS) {
+      now - lastFailPollMs >= NS12::BUTTON_POLL_INTERVAL_MS)
+  {
     lastFailPollMs = now;
     ns12.requestRB(NS12::BUTTON_FAIL_ADDR, 1);
   }
 
   if (!noOffsetTestPending && !ns12.isReadPending() &&
-      now - lastDiagButtonPollMs >= NS12::DIAG_BUTTON_POLL_INTERVAL_MS) {
+      now - lastDiagButtonPollMs >= NS12::DIAG_BUTTON_POLL_INTERVAL_MS)
+  {
     lastDiagButtonPollMs = now;
     ns12.requestRB(NS12::DIAG_BUTTON_BASE_ADDR + nextDiagButtonPollIndex, 1);
     nextDiagButtonPollIndex = (nextDiagButtonPollIndex + 1) % NS12::DIAG_BUTTON_COUNT;
@@ -2487,11 +2938,14 @@ void serviceHmiButtonPolling() {
   bool pressed;
   uint16_t rawValue;
 
-  if (ns12.consumeReadBit(addr, pressed, rawValue)) {
+  if (ns12.consumeReadBit(addr, pressed, rawValue))
+  {
     bool matched = false;
 
-    for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++) {
-      if (kButtonAddrs[i] != addr) continue;
+    for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++)
+    {
+      if (kButtonAddrs[i] != addr)
+        continue;
 
 #if NS12_DEBUG_RAW_RX
       Serial.printf("[HMI-RAW] %-11s $B%-3u raw=0x%02X bit7=%u (bit0=%u)\n", kButtonNames[i],
@@ -2503,20 +2957,24 @@ void serviceHmiButtonPolling() {
       break;
     }
 
-    if (!matched && addr == NS12::BUTTON_ACK_ADDR) {
+    if (!matched && addr == NS12::BUTTON_ACK_ADDR)
+    {
       applyAckButtonUpdate(pressed);
       matched = true;
     }
 
-    if (!matched && addr == NS12::BUTTON_FAIL_ADDR) {
+    if (!matched && addr == NS12::BUTTON_FAIL_ADDR)
+    {
       applyFailButtonUpdate(pressed);
       matched = true;
     }
 
-    if (!matched) {
+    if (!matched)
+    {
       uint8_t diagIndex;
 
-      if (addrToDiagIndex(addr, diagIndex)) {
+      if (addrToDiagIndex(addr, diagIndex))
+      {
         applyDiagButtonUpdate(diagIndex, pressed);
       }
     }
@@ -2536,8 +2994,10 @@ void serviceHmiButtonPolling() {
 // switching atomically: a bit is only accepted once it reads the same on
 // two consecutive ~20ms polls, so a one-poll glitch never reaches
 // plcAcknowledge/plcMachineRunning/tubeIsBad or their log lines.
-void servicePlcControl() {
-  if (!mcpOk || !(state == SystemState::Standby || state == SystemState::TubeGap)) return;
+void servicePlcControl()
+{
+  if (!mcpOk || !(state == SystemState::Standby || state == SystemState::TubeGap))
+    return;
   static bool ackPrevRaw = false, runningPrevRaw = false, tubeBadPrevRaw = false;
   bool ack = (mcp.digitalRead(McpPin::INPUT_1) == LOW); // INPUT_PULLUP: idle HIGH
   bool running = (mcp.digitalRead(McpPin::INPUT_2) == LOW);
@@ -2545,19 +3005,22 @@ void servicePlcControl() {
   // Keyence result, not yet confirmed against the S7 program.
   bool tubeBad = (digitalRead(Pins::ESP_INPUT_3) == HIGH);
 
-  if (ack == ackPrevRaw && ack != plcAcknowledge) {
+  if (ack == ackPrevRaw && ack != plcAcknowledge)
+  {
     plcAcknowledge = ack;
     Serial.printf("[PLC] ACKNOWLEDGE -> %s\n", ack ? "ACTIVE" : "idle");
   }
   ackPrevRaw = ack;
 
-  if (running == runningPrevRaw && running != plcMachineRunning) {
+  if (running == runningPrevRaw && running != plcMachineRunning)
+  {
     plcMachineRunning = running;
     Serial.printf("[PLC] MACHINE_RUNNING -> %s\n", running ? "ACTIVE" : "idle");
   }
   runningPrevRaw = running;
 
-  if (tubeBad == tubeBadPrevRaw && tubeBad != tubeIsBad) {
+  if (tubeBad == tubeBadPrevRaw && tubeBad != tubeIsBad)
+  {
     tubeIsBad = tubeBad;
     Serial.printf("[PLC] Keyence result (via PLC) -> %s\n", tubeBad ? "FAIL" : "PASS");
     ns12.sendWB(NS12::TUBE_BAD_ADDR, &tubeIsBad, 1);
@@ -2580,48 +3043,78 @@ void servicePlcControl() {
 // condition) and is also reachable any time after via the 'Y' serial/
 // diag command for troubleshooting -- see handleSerialCommand()'s case
 // 'Y' for why that's gated to Standby/FaultStop only.
-void scanMcpStatusLeds() {
-  if (!mcpOk) return;
+void scanMcpStatusLeds()
+{
+  if (!mcpOk)
+    return;
   static const uint8_t ledPins[] = {McpPin::ILED_R, McpPin::ILED_G, McpPin::ILED_B,
-                                     McpPin::ELED_R, McpPin::ELED_G, McpPin::ELED_B,
-                                     McpPin::ELED_Y};
+                                    McpPin::ELED_R, McpPin::ELED_G, McpPin::ELED_B,
+                                    McpPin::ELED_Y};
   static const char *const ledNames[] = {"ILED_R", "ILED_G", "ILED_B",
-                                          "ELED_R", "ELED_G", "ELED_B", "ELED_Y"};
+                                         "ELED_R", "ELED_G", "ELED_B", "ELED_Y"};
 
-  for (size_t i = 0; i < sizeof(ledPins) / sizeof(ledPins[0]); ++i) {
+  for (size_t i = 0; i < sizeof(ledPins) / sizeof(ledPins[0]); ++i)
+  {
     Serial.printf("[SETUP] %s -> ON\n", ledNames[i]);
     mcp.digitalWrite(ledPins[i], HIGH); // ledNames[i] (e.g. ILED_R) -> ON
     delay(250);
-    mcp.digitalWrite(ledPins[i], LOW);  // ledNames[i] -> OFF before moving to the next LED
+    mcp.digitalWrite(ledPins[i], LOW); // ledNames[i] -> OFF before moving to the next LED
     delay(150);
   }
   Serial.println(F("[SETUP] MCP LED sweep complete."));
 }
 
-void handleSerialCommand(char c) {
-  switch (c) {
-  case 'S': state = SystemState::Standby; break;             // $B50 / lamp $B550 -- force state
-  case 'W': state = SystemState::WaitingForTube; break;      // $B51 / lamp $B551 -- force state
-  case 'I': state = SystemState::InspectingTube; break;      // $B52 / lamp $B552 -- force state
-  case 'G': state = SystemState::TubeGap; break;              // $B53 / lamp $B553 -- force state
-  case 'F': enterFaultStop(); break;                          // $B54 / lamp $B554 -- force state
-  case '1': case '2': case '3': case '4': case '5':           // $B55-$B59 / lamp $B555-$B559
-  case '6': case '7': case '8': case '9': {                   // $B60-$B63 / lamp $B560-$B563
-    uint8_t idx = c - '1'; // IO1-IO9 -- kMcpOutputPins[0-6] are the 7 LEDs, [7-8] are OPTO_1/2
+void handleSerialCommand(char c)
+{
+  switch (c)
+  {
+  case 'S':
+    state = SystemState::Standby;
+    break; // $B50 / lamp $B550 -- force state
+  case 'W':
+    state = SystemState::WaitingForTube;
+    break; // $B51 / lamp $B551 -- force state
+  case 'I':
+    state = SystemState::InspectingTube;
+    break; // $B52 / lamp $B552 -- force state
+  case 'G':
+    state = SystemState::TubeGap;
+    break; // $B53 / lamp $B553 -- force state
+  case 'F':
+    enterFaultStop();
+    break; // $B54 / lamp $B554 -- force state
+  case '1':
+  case '2':
+  case '3':
+  case '4':
+  case '5': // $B55-$B59 / lamp $B555-$B559
+  case '6':
+  case '7': // $B60-$B61 / lamp $B560-$B561
+  {
+    uint8_t idx = c - '1'; // IO1-IO7 -- MCP-driven LED test outputs
 
-    if (mcpOk) {
+    if (mcpOk)
+    {
       toggleMcpOutput(idx);
       Serial.printf("[IO-TEST] MCP output #%c (pin %u) -> %s\n", c, kMcpOutputPins[idx],
                     mcpOutputState[idx] ? "HIGH" : "LOW");
     }
     break;
   }
-  case 'A': { // $B64 / lamp $B564 -- "Test #10" / YEL_LED_TEST (panel button 10)
-    // Was an ESP_OPTO_3 toggle -- no longer safe now that pin is a live
-    // TO_PLC_COMM bit, not a free test output. Panel button 10 (was
-    // "OPTO3") is repurposed as a Yellow LED test instead.
-    toggleMcpOutput(6); // kMcpOutputPins[6] == McpPin::ELED_Y
-    Serial.printf("[IO-TEST] ELED_Y -> %s\n", mcpOutputState[6] ? "HIGH" : "LOW");
+  case '8': // $B62 / lamp $B562 -- TO_PLC_COMM bit 0 / OPTO_1
+  case '9': // $B63 / lamp $B563 -- TO_PLC_COMM bit 1 / OPTO_2
+  {
+    uint8_t bit = c - '8';
+    PlcComms::toggleTestBit(bit);
+    Serial.printf("[PLC-TEST] OPTO_%u -> %s\n", bit + 1,
+                  PlcComms::testOutputState[bit] ? "HIGH" : "LOW");
+    break;
+  }
+  case 'A':
+  { // $B64 / lamp $B564 -- TO_PLC_COMM bit 2 / OPTO_3
+    PlcComms::toggleTestBit(2);
+    Serial.printf("[PLC-TEST] OPTO_3 -> %s\n",
+                  PlcComms::testOutputState[2] ? "HIGH" : "LOW");
     break;
   }
   // Not a diag-button command -- on-demand troubleshooting sweep of all 7
@@ -2634,17 +3127,21 @@ void handleSerialCommand(char c) {
   // pins) had it set to -- re-press that screen's Enable button to
   // resync the physical LED if so.
   case 'Y':
-    if (state == SystemState::Standby || state == SystemState::FaultStop) {
+    if (state == SystemState::Standby || state == SystemState::FaultStop)
+    {
       scanMcpStatusLeds();
-    } else {
+    }
+    else
+    {
       Serial.println(F("[SETUP] LED sweep refused -- only safe during Standby/FaultStop."));
     }
     break;
-  case 'K':                                                   // $B65 / lamp $B565
+  case 'K': // $B65 / lamp $B565
     keyenceTrigger.fire();
     Serial.println(F("[IO-TEST] Keyence trigger pulse fired (GPIO1)."));
     break;
-  case 'P': { // $B66 / lamp $B566
+  case 'P':
+  { // $B66 / lamp $B566
     static const char *kStatusNames[4] = {"STOP", "ALARM", "WARNING", "READY"};
     uint8_t nextCode = (static_cast<uint8_t>(plcLastCommandedStatus) + 1) % 4;
     plcLastCommandedStatus = static_cast<PlcComms::PlcStatus>(nextCode);
@@ -2652,96 +3149,116 @@ void handleSerialCommand(char c) {
     Serial.printf("[PLC] PLC_STATUS -> %u (%s)\n", nextCode, kStatusNames[nextCode]);
     break;
   }
-  case 'M':                                                   // $B67 / lamp $B567
+  case 'M': // $B67 / lamp $B567
     pushTestPattern();
     break;
-  case 'C':                                                   // $B68 / lamp $B568
+  case 'C': // $B68 / lamp $B568
     capture.rearm();
     Serial.println(F("[DIAG] Capture forced/rearmed."));
     break;
   case 'B': // $B69 / lamp $B569
 
-    if (!rawBaselineCaptureInProgress) {
+    if (!rawBaselineCaptureInProgress)
+    {
       startRawBaselineCapture();
-    } else {
+    }
+    else
+    {
       Serial.println(F("[DIAG] Baseline capture already in progress."));
     }
     break;
-  case 'X': { // $B70 / lamp $B570
+  case 'X':
+  { // $B70 / lamp $B570
     Serial.println(F("[DIAG] Frame dump: raw-delta (live pipeline) vs calibrated C (one-off"));
     Serial.println(F("       mlx.getFrame() snapshot, for correlating real thresholds):"));
 
-    if (!rawBaselineCaptured) {
+    if (!rawBaselineCaptured)
+    {
       Serial.println(F("[DIAG] WARNING: no baseline captured yet ('B') -- raw-delta values"));
       Serial.println(F("       below are meaningless (baseline defaults to 0)."));
     }
     static float calibratedSnapshot[StripZone::COLS * StripZone::ROWS];
     bool calibratedOk = mlxInitialized && (mlx.getFrame(calibratedSnapshot) == 0);
 
-    for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++) {
+    for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++)
+    {
       Serial.print(mlxFrame[i], 0);
       Serial.print('/');
 
-      if (calibratedOk) {
+      if (calibratedOk)
+      {
         Serial.print(calibratedSnapshot[i], 1);
-      } else {
+      }
+      else
+      {
         Serial.print(F("?"));
       }
       Serial.print(i % StripZone::COLS == StripZone::COLS - 1 ? '\n' : ' ');
     }
     break;
   }
-  case 'R': { // $B71 / lamp $B571
+  case 'R':
+  { // $B71 / lamp $B571
     capture.rearm();
     float blankFrame[StripZone::COLS * StripZone::ROWS];
 
-    for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++) {
+    for (size_t i = 0; i < StripZone::COLS * StripZone::ROWS; i++)
+    {
       blankFrame[i] = MATRIX_RAW_DELTA_MIN;
     }
     pushWordLampMatrix(blankFrame);
     Serial.println(F("[DIAG] Rearmed, display cleared."));
     break;
   }
-  case 'D':                                                   // $B72 / lamp $B572
+  case 'D': // $B72 / lamp $B572
     printDiagnostics();
     break;
-  case 'L':                                                   // $B77 / lamp $B577
+  case 'L': // $B77 / lamp $B577
     continuousMlxTestMode = !continuousMlxTestMode;
+
+    if (continuousMlxTestMode)
+    {
+      displayPushQueued = false;
+      lastLiveMatrixPushMs = millis() - LIVE_MATRIX_REFRESH_INTERVAL_MS;
+    }
+
     Serial.printf("[MLX-LIVE] continuous reading %s%s\n",
                   continuousMlxTestMode ? "ON" : "OFF",
                   (continuousMlxTestMode && !rawBaselineCaptured)
                       ? " (WARNING: no baseline yet -- send 'B' first)"
                       : "");
     break;
-  case 'H':                                                   // $B73 / lamp $B573
+  case 'H': // $B73 / lamp $B573
     burstProbeUntilMs = millis() + BURST_PROBE_DURATION_MS;
     Serial.printf("[HMI-PROBE] Burst mode ON for %lu ms -- hold any HMI button NOW, watch for "
                   "[NS12-FRAME]/[HMI-RAW] lines on its address.\n",
                   (unsigned long)BURST_PROBE_DURATION_MS);
     break;
 #if NS12_ENABLE_RM_POLLING
-  case 'V':                                                   // $B74 / lamp $B574
+  case 'V': // $B74 / lamp $B574
     wordVerifyIndex = 0;
     Serial.println(F("[WORD-VERIFY] Reading $W30..$W34 via RM (confirmed-correct word path) -- "
-                      "compare against the RB [HMI-RAW] values for $B30..$B34."));
+                     "compare against the RB [HMI-RAW] values for $B30..$B34."));
     break;
 #endif
-  case 'J': { // $B75 / lamp $B575
-    bool oneBit = true;
-    ns12.sendWB(NS12::BUTTON_SETUP_ADDR, &oneBit, 1);
-    burstProbeUntilMs = millis() + 4000;
-    Serial.println(F("[WB-RB-TEST] Wrote 1 to $B30 (SETUP) ourselves, no touchscreen involved. "
-                      "Watching for bit7=1 on the next [HMI-RAW] SETUP line..."));
+  case 'J':
+  { // $B75 / lamp $B575
+    // Intentionally DO NOT write to a live HMI button bit here. The old
+    // setup-address probe triggered the real SETUP function on the panel.
+    Serial.println(F("[WB-RB-TEST] Disabled: live HMI button writes are unsafe and can trigger "
+                     "real screen actions. This diagnostic is kept as a log-only probe."));
     break;
   }
 #if NS12_ENABLE_RM_POLLING
-  case 'N': { // $B76 / lamp $B576
-    bool oneBit = true;
-    ns12.sendWB(NS12::BUTTON_SETUP_ADDR, &oneBit, 1);
-    noOffsetTestAddr = NS12::BUTTON_SETUP_ADDR;
-    noOffsetTestPending = true;
-    Serial.println(F("[WB-RB-SANITY] Wrote 1 to $B30, reading it back via RB -- watch the next "
-                      "[NS12-FRAME] line for dataText=\"80\"."));
+  case 'N':
+  { // $B76 / lamp $B576
+    // Do not write to BUTTON_SETUP_ADDR or any other live function button.
+    // That would trigger the actual panel action instead of a true no-offset
+    // readback test.
+    noOffsetTestAddr = 0;
+    noOffsetTestPending = false;
+    Serial.println(F("[WB-RB-SANITY] Disabled: no live HMI button writes allowed here; "
+                     "this would trigger SETUP/other screen actions."));
     break;
   }
 #endif
@@ -2753,11 +3270,13 @@ void handleSerialCommand(char c) {
 // =====================================================================
 // setup() / loop()
 // =====================================================================
-void setup() {
+void setup()
+{
   Serial.begin(115200);
   const uint32_t serialWaitStart = millis();
 
-  while (!Serial && (millis() - serialWaitStart < 3000UL)) {
+  while (!Serial && (millis() - serialWaitStart < 3000UL))
+  {
     delay(10);
   }
 
@@ -2778,15 +3297,18 @@ void setup() {
   mcpOk = mcp.begin_I2C(MCP_I2C_ADDR, &Wire);
   Serial.printf("MCP initialized: %s\n", mcpOk ? "YES" : "NO");
 
-  if (mcpOk) {
+  if (mcpOk)
+  {
     for (uint8_t p : {McpPin::ILED_R, McpPin::ILED_G, McpPin::ILED_B, McpPin::ELED_R,
-                       McpPin::ELED_G, McpPin::ELED_B, McpPin::ELED_Y, McpPin::OPTO_1,
-                       McpPin::OPTO_2}) {
+                      McpPin::ELED_G, McpPin::ELED_B, McpPin::ELED_Y, McpPin::OPTO_1,
+                      McpPin::OPTO_2})
+    {
       mcp.pinMode(p, OUTPUT);
       mcp.digitalWrite(p, LOW);
     }
 
-    for (uint8_t p : {McpPin::INPUT_1, McpPin::INPUT_2}) {
+    for (uint8_t p : {McpPin::INPUT_1, McpPin::INPUT_2})
+    {
       mcp.pinMode(p, INPUT_PULLUP);
     }
     scanMcpStatusLeds();
@@ -2804,7 +3326,7 @@ void setup() {
   // rising-edge = "tube entering" assumption. This pin carries a real 24V
   // signal through a 10K/1.5K divider -- see ENCODER_PULSE_PIN's begin()
   // comment for why that makes the internal pull practically a no-op.
-  pinMode(Pins::PRESENCE_SENSOR_PIN, INPUT_PULLDOWN);
+  pinMode(Pins::PRESENCE_SENSOR_PIN, INPUT);
   attachInterrupt(digitalPinToInterrupt(Pins::PRESENCE_SENSOR_PIN), presenceIsr, CHANGE);
 
   keyenceTrigger.begin(Pins::KEYENCE_TRIGGER_PIN);
@@ -2813,14 +3335,17 @@ void setup() {
   pinMode(Pins::ESP_OPTO_3, OUTPUT);
   digitalWrite(Pins::ESP_OPTO_3, LOW);
 
-  pinMode(Pins::ESP_INPUT_3, INPUT_PULLDOWN); // FROM_PLC_COMM bit 2, polled in servicePlcControl()
+  pinMode(Pins::ESP_INPUT_3, INPUT); // FROM_PLC_COMM bit 2, polled in servicePlcControl()
 
   fpsWindowStartMs = millis();
   lastDiagnosticMs = millis();
 
-  if (mcpOk && mlxOk) {
+  if (mcpOk && mlxOk)
+  {
     state = SystemState::Standby;
-  } else {
+  }
+  else
+  {
     enterFaultStop();
   }
 
@@ -2828,29 +3353,33 @@ void setup() {
   esp_task_wdt_add(NULL);
 }
 
-void loop() {
+void loop()
+{
   esp_task_wdt_reset();
 
   encoder.service();
   keyenceTrigger.service();
 
-  if (presenceEdgePending) {
+  if (presenceEdgePending)
+  {
     handlePresenceEdge();
   }
-
 
   serviceTubePositionTracking();
   serviceHmiInputPolling();
   serviceHmiButtonPolling();
 
-  if ((state == SystemState::Standby || state == SystemState::TubeGap) && mcpOk) {
+  if ((state == SystemState::Standby || state == SystemState::TubeGap) && mcpOk)
+  {
     uint32_t now = millis();
 
-    if (now - lastMcpPollMs >= MCP_POLL_INTERVAL_MS) {
+    if (now - lastMcpPollMs >= MCP_POLL_INTERVAL_MS)
+    {
       lastMcpPollMs = now;
       servicePlcControl();
 
-      if (state == SystemState::TubeGap) {
+      if (state == SystemState::TubeGap)
+      {
         state = SystemState::WaitingForTube;
         capture.rearm();
       }
@@ -2866,7 +3395,8 @@ void loop() {
     PlcComms::PlcStatus wantStatus =
         (state == SystemState::FaultStop) ? PlcComms::PlcStatus::STOP : PlcComms::PlcStatus::READY;
 
-    if (wantStatus != plcLastCommandedStatus) {
+    if (wantStatus != plcLastCommandedStatus)
+    {
       plcLastCommandedStatus = wantStatus;
       PlcComms::setStatus(wantStatus);
     }
@@ -2879,7 +3409,8 @@ void loop() {
   {
     uint32_t now = millis();
 
-    if (now - lastPowerStatusBlinkMs >= POWER_STATUS_BLINK_MS) {
+    if (now - lastPowerStatusBlinkMs >= POWER_STATUS_BLINK_MS)
+    {
       lastPowerStatusBlinkMs = now;
       powerStatusState = !powerStatusState;
       ns12.sendWB(NS12::POWER_STATUS_ADDR, &powerStatusState, 1);
@@ -2887,44 +3418,60 @@ void loop() {
 
     bool espFaulty = (state == SystemState::FaultStop);
 
-    if (espFaulty != espFaultyLastSent) {
+    if (espFaulty != espFaultyLastSent)
+    {
       espFaultyLastSent = espFaulty;
       ns12.sendWB(NS12::ESP_FAULTY_ADDR, &espFaultyLastSent, 1);
     }
 
     bool overallAlarm = espFaulty || !mcpOk || !mlxInitialized;
 
-    if (overallAlarm != overallAlarmLastSent) {
+    if (overallAlarm != overallAlarmLastSent)
+    {
       overallAlarmLastSent = overallAlarm;
       ns12.sendWB(NS12::OVERALL_ALARM_ADDR, &overallAlarmLastSent, 1);
     }
   }
 
-  if (mlxInitialized) {
+  if (mlxInitialized)
+  {
     uint32_t nowMs = millis();
 
-    if (nowMs - lastMlxFrameMs >= MLX_FRAME_PERIOD_MS) {
+    if (nowMs - lastMlxFrameMs >= MLX_FRAME_PERIOD_MS)
+    {
       lastMlxFrameMs = nowMs;
       static float rawPixelsNow[32 * 24];
       bool rawOk = readMlxRawCombined(rawPixelsNow);
       lastFrameValid = rawOk;
 
-      if (rawOk) {
+      if (rawOk)
+      {
         successfulFrameCount++;
         fpsWindowFrameCount++;
         consecutiveFrameFailures = 0;
         updateFrameRate();
         setStatusLed(0, 18, 0); // brief green heartbeat
 
-        if (rawBaselineCaptureInProgress) {
+        if (rawBaselineCaptureInProgress)
+        {
           serviceRawBaselineCapture(rawPixelsNow);
-        } else if (rawBaselineCaptured) {
+        }
+        else if (rawBaselineCaptured)
+        {
           subtractBaseline(rawPixelsNow, mlxFrame);
           calculateFrameStatistics();
           capture.onNewFrame(mlxFrame);
 
+          if (continuousMlxTestMode && !pendingMatrix.active &&
+              nowMs - lastLiveMatrixPushMs >= LIVE_MATRIX_REFRESH_INTERVAL_MS)
+          {
+            lastLiveMatrixPushMs = nowMs;
+            pushWordLampMatrix(mlxFrame);
+          }
+
           if (continuousMlxTestMode &&
-              nowMs - lastContinuousMlxPrintMs >= CONTINUOUS_MLX_PRINT_INTERVAL_MS) {
+              nowMs - lastContinuousMlxPrintMs >= CONTINUOUS_MLX_PRINT_INTERVAL_MS)
+          {
             lastContinuousMlxPrintMs = nowMs;
             Serial.printf("[MLX-LIVE] min/max/avg raw delta=%.0f/%.0f/%.0f rejected=%u\n",
                           minimumTemperatureC, maximumTemperatureC, averageTemperatureC,
@@ -2935,28 +3482,36 @@ void loop() {
         // (fps/heartbeat/recovery logic all still work) but nothing feeds
         // the QC/HMI pipeline until 'B' is run once. See the 'B'/'X'
         // serial commands.
-      } else {
+      }
+      else
+      {
         failedFrameCount++;
         consecutiveFrameFailures++;
         setStatusLed(25, 8, 0);
 
-        if (consecutiveFrameFailures >= FRAME_FAILURE_RECOVERY_COUNT) {
+        if (consecutiveFrameFailures >= FRAME_FAILURE_RECOVERY_COUNT)
+        {
           attemptCameraRecovery();
         }
       }
     }
-  } else {
+  }
+  else
+  {
     // Retry camera detection every second without locking the CPU.
     static uint32_t lastRetryMs = 0;
 
-    if (millis() - lastRetryMs >= 1000UL) {
+    if (millis() - lastRetryMs >= 1000UL)
+    {
       lastRetryMs = millis();
       mlxDetected = isI2CAddressPresent(MLX90640_I2CADDR_DEFAULT);
 
-      if (mlxDetected) {
+      if (mlxDetected)
+      {
         mlxInitialized = initializeMlx();
 
-        if (mlxInitialized) {
+        if (mlxInitialized)
+        {
           consecutiveFrameFailures = 0;
           fpsWindowStartMs = millis();
           fpsWindowFrameCount = 0;
@@ -2968,30 +3523,33 @@ void loop() {
   }
 
   ns12.setTelemetry((uint16_t)(++heartbeatCounter),
-                     toUnsignedX10(measuredFramesPerSecond),
-                     toUnsignedX10(minimumTemperatureC),
-                     toUnsignedX10(maximumTemperatureC),
-                     toUnsignedX10(averageTemperatureC),
-                     (uint16_t)successfulFrameCount,
-                     (uint16_t)failedFrameCount,
-                     (uint16_t)state,
-                     buildStatusWord());
+                    toUnsignedX10(measuredFramesPerSecond),
+                    toUnsignedX10(minimumTemperatureC),
+                    toUnsignedX10(maximumTemperatureC),
+                    toUnsignedX10(averageTemperatureC),
+                    (uint16_t)successfulFrameCount,
+                    (uint16_t)failedFrameCount,
+                    (uint16_t)state,
+                    buildStatusWord());
   ns12.service();
 
   serviceDisplayThrottle();
   serviceMatrixPacing();
   checkDisplayAutoFallback();
 
-  if (Serial.available()) {
+  if (Serial.available())
+  {
     handleSerialCommand((char)Serial.read());
   }
 
-  if (state != lastLoggedState) {
+  if (state != lastLoggedState)
+  {
     Serial.printf("[STATE] %s -> %s\n", stateName(lastLoggedState), stateName(state));
     lastLoggedState = state;
   }
 
-  if (millis() - lastDiagnosticMs >= DIAGNOSTIC_INTERVAL_MS) {
+  if (millis() - lastDiagnosticMs >= DIAGNOSTIC_INTERVAL_MS)
+  {
     lastDiagnosticMs = millis();
     printDiagnostics();
   }
