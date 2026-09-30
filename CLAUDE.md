@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_00_01.cpp`, i.e. V5.00.01 -- see "V5.00.00" below for how we
+`tgis510_v5_01_01.cpp`, i.e. V5.01.01 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -47,6 +47,24 @@ standing rules and recent context carry over across sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V5.01.01** -- Ported the `KeyenceTrigger` upgrade from the user's
+  `TGIS-510_cpp_V5.01.00` (same source as V5.00.00: their own edits,
+  pushed to `claude/510-bottomer-hot-melt-monitor-3rq1ao` by mistake).
+  `fire()` is now a thin wrapper over a new `fireFor(widthUs)`, which
+  takes a custom pulse width and returns whether it actually fired (false
+  if already pending) -- production triggering
+  (`serviceTubePositionTracking()`) still calls plain `fire()` and is
+  unaffected. Repurposed `case 'K'` (`$B65`, the KEYENCE_TRIG diag
+  button): it no longer fires one manual 500us pulse -- it now toggles a
+  periodic bench-test pulse (100ms wide, every 500ms) via the new
+  `serviceKeyenceTriggerTest()`, long enough to see/hear/scope without a
+  real tube pass. Flipped `kDiagLampAutoReset[15]` (KEYENCE_TRIG) from
+  `true` to `false` to match -- it's a persistent toggle now, not a
+  one-shot confirm-and-reset action (also fixed that table's stale
+  `OPTO_1/2/3` comment labels for indices 12-15, which actually cover
+  IO8/IO9/YEL_LED_TEST/KEYENCE_TRIG). The version number was the user's
+  explicit call (V5.01.01), not derived from V5.00.01 + V5.01.00 by the
+  usual bump rule.
 - **V5.00.01** -- First step toward the V5.00.00 header brainstorm's
   velocity-dependent processing mode: that's blocked on a real
   `ENCODER_COUNTS_PER_MM` (still `1.0f`, a placeholder), which needs an
