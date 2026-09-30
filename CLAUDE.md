@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_01.cpp`, i.e. V5.01.01 -- see "V5.00.00" below for how we
+`tgis510_v5_01_02.cpp`, i.e. V5.01.02 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -47,6 +47,46 @@ standing rules and recent context carry over across sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V5.01.02** -- Gray-coded `TO_PLC_COMM` (`PLC_STATUS`, `OPTO_1`/
+  `OPTO_2`/`ESP_OPTO_3`) instead of raw binary, from a design discussion
+  about getting more usable signal out of a 3-wire link that's staying at
+  3 wires each side (confirmed -- no more physical PLC I/O headroom on
+  either end for now). `GRAY3_ENCODE[8]` in `PlcComms` maps each
+  `PlcStatus` value to a pattern where every actually-possible transition
+  changes exactly one physical line, verified against this file's own two
+  transition paths rather than assumed: the diag `'P'` button
+  (`$B66`/`handleSerialCommand()`) cycles STOP->ALARM->WARNING->READY->STOP
+  one step at a time (Gray-ring-adjacent by construction), and production
+  logic (`loop()`) jumps directly between STOP and READY skipping
+  ALARM/WARNING -- checked separately, and it happens to also be single-bit
+  with this table. Ring positions 4-7 are spare, unused, for a future
+  `PlcStatus` value if one's ever added. Payoff: the PLC no longer needs a
+  dedicated "data valid" strobe bit to safely sample `PLC_STATUS` -- any
+  detected line change on OPTO_1/OPTO_2/ESP_OPTO_3 is inherently the
+  strobe, and a decoded pattern more than 1 bit away from the last one is
+  detectable on the PLC side as a missed update/line glitch rather than a
+  real state, which the previous raw-binary encoding couldn't tell apart
+  from a legitimate value. Only `setStatus()` changed -- `toggleTestBit()`
+  (the `'8'`/`'9'`/`'A'` bench-test overrides, `$B62-$B64`) deliberately
+  stays raw/per-pin, since it exists to flip each physical line in
+  isolation for wiring verification; patterns produced while using it
+  aren't meant to be valid Gray/PLC_STATUS codes.
+  Considered and rejected applying the same treatment to `FROM_PLC_COMM`
+  (`ACKNOWLEDGE`/`MACHINE_RUNNING`/`tubeIsBad`) even though it's confirmed
+  not yet wired on the PLC side (so no compatibility concern either way):
+  Gray coding's single-bit guarantee only holds for one sender stepping a
+  single value through defined, sequenced states. Those three are
+  independent facts that can each change on their own schedule (the PLC
+  could raise `RUNNING` and `ACKNOWLEDGE` in the same scan cycle, with no
+  "adjacent step" relationship between them) -- no bit assignment fixes
+  that, since the problem isn't the encoding, it's that there's no single
+  state machine to encode. Left as three independently-debounced flags,
+  which `servicePlcControl()` already handles correctly.
+  The PLC side isn't implemented here (separate S7 program) -- it needs a
+  matching Gray-decode + Hamming-distance-1 validity check before this
+  buys anything; until then the PLC would need to keep decoding these 3
+  bits as if they were still raw binary, which no longer matches what the
+  ESP drives.
 - **V5.01.01** -- Ported the `KeyenceTrigger` upgrade from the user's
   `TGIS-510_cpp_V5.01.00` (same source as V5.00.00: their own edits,
   pushed to `claude/510-bottomer-hot-melt-monitor-3rq1ao` by mistake).
