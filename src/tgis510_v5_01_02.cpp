@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.01
+// Ref: TGIS-510_cpp_V5.01.02
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2436,14 +2436,31 @@ uint32_t buttonPressCount[NS12::BUTTON_COUNT] = {};
 #endif
 
 //
-//   ESP32 -> PLC: TO_PLC_COMM, a 3-bit byte. Bits 0-1 (McpPin::OPTO_1/
-//   OPTO_2) carry PLC_STATUS, one of 4 mutually-exclusive states (STOP=0/
-//   ALARM=1/WARNING=2/READY=3). Bit 2/MSB (Pins::ESP_OPTO_3) is currently
-//   always 0 since PlcStatus has no state above READY=3 -- reserved
-//   headroom, not yet assigned. Bit-to-pin assignment and the state codes
-//   are both this file's choice, not yet confirmed against the S7 program
-//   -- verify before relying on it, and update setStatus()/PlcStatus
-//   together if either needs to change.
+//   ESP32 -> PLC: TO_PLC_COMM, a 3-bit byte, Gray-coded (V5.01.02) rather
+//   than raw binary -- GRAY3_ENCODE[] below maps each PlcStatus value to a
+//   pattern such that every actually-possible transition changes exactly
+//   one physical line. Verified against this file's own two transition
+//   paths, not assumed: the diag 'P' button cycles STOP->ALARM->WARNING->
+//   READY->STOP one step at a time (always Gray-ring-adjacent by
+//   construction), and production logic (below) jumps directly between
+//   STOP and READY, skipping ALARM/WARNING -- checked separately, and
+//   GRAY3_ENCODE[0]=0b000/GRAY3_ENCODE[3]=0b010 differ in exactly bit 1
+//   (OPTO_2), so that jump is single-bit too. Gray-ring positions 4-7 are
+//   spare, reachable only by extending PlcStatus/GRAY3_ENCODE together --
+//   not yet assigned. Because only one line ever moves per step, the PLC
+//   doesn't need a separate "data valid" strobe: any detected change on
+//   OPTO_1/OPTO_2/ESP_OPTO_3 is the strobe, and a decoded pattern more
+//   than 1 bit away from the previous one indicates a missed update or
+//   line glitch, not a valid PLC_STATUS transition. NOTE: the bench-test
+//   overrides on OPTO_1/OPTO_2/ESP_OPTO_3 (case '8'/'9'/'A' in
+//   handleSerialCommand(), $B62-$B64, gated behind the TEST screen's own
+//   Enable toggle) deliberately bypass this encoding to flip each line in
+//   isolation for wiring verification -- patterns seen while using those
+//   are not valid Gray/PLC_STATUS codes and shouldn't be decoded as one.
+//   Bit-to-pin assignment and the state codes are both this file's choice,
+//   not yet confirmed against the S7 program -- verify before relying on
+//   it, and update setStatus()/PlcStatus/GRAY3_ENCODE together if any of
+//   them needs to change.
 //
 //   PLC -> ESP32: FROM_PLC_COMM, a 3-bit byte. Bit 0 (McpPin::INPUT_1) =
 //   ACKNOWLEDGE, bit 1 (McpPin::INPUT_2) = MACHINE_RUNNING -- independent
@@ -2475,12 +2492,18 @@ namespace PlcComms
 
   bool testOutputState[3] = {};
 
+  // Gray-ring position (0-7) -> physical pattern (bit0=OPTO_1, bit1=OPTO_2,
+  // bit2=ESP_OPTO_3). Consecutive entries, and entry 7 -> entry 0, differ
+  // in exactly one bit -- see the TO_PLC_COMM comment above for why that
+  // matters and which real transitions were checked against it.
+  constexpr uint8_t GRAY3_ENCODE[8] = {0, 4, 6, 2, 3, 7, 5, 1};
+
   void setStatus(PlcStatus s)
   {
-    uint8_t code = static_cast<uint8_t>(s);
-    testOutputState[0] = (code >> 0) & 1;
-    testOutputState[1] = (code >> 1) & 1;
-    testOutputState[2] = (code >> 2) & 1;
+    uint8_t pattern = GRAY3_ENCODE[static_cast<uint8_t>(s) & 0x07];
+    testOutputState[0] = (pattern >> 0) & 1;
+    testOutputState[1] = (pattern >> 1) & 1;
+    testOutputState[2] = (pattern >> 2) & 1;
 
     digitalWrite(Pins::ESP_OPTO_3, testOutputState[2]);
 
