@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.00.00
+// Ref: TGIS-510_cpp_V5.00.01
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -569,6 +569,20 @@ public:
   }
 
   int64_t total() const { return totalCounts; }
+
+  // Zeroes the running total without touching the live HW counter's
+  // ongoing count -- re-anchors lastHwCount to the current reading first,
+  // so the next service() call sees a delta of ~0 instead of counting
+  // every pulse since begin() as a single jump. For calibrating
+  // ENCODER_COUNTS_PER_MM: zero this, feed a tube of known length
+  // through, then total() / that length (mm) is the real counts/mm.
+  void resetTotal()
+  {
+    int16_t hw = 0;
+    pcnt_get_counter_value(PCNT_UNIT_0, &hw);
+    lastHwCount = hw;
+    totalCounts = 0;
+  }
 
 private:
   int16_t lastHwCount = 0;
@@ -3135,6 +3149,18 @@ void handleSerialCommand(char c)
     {
       Serial.println(F("[SETUP] LED sweep refused -- only safe during Standby/FaultStop."));
     }
+    break;
+  // Not a diag-button command -- calibration helper for the still-
+  // placeholder ENCODER_COUNTS_PER_MM (blocks the velocity-dependent
+  // Celsius/raw-delta mode from the header brainstorm). Zeroes the
+  // encoder's running total; feed a tube of known length through the
+  // presence sensor, then read 'D' for the raw count and divide by that
+  // length (mm) to get the real counts/mm value.
+  case 'Z':
+    encoder.resetTotal();
+    Serial.println(F("[CALIBRATION] Encoder total zeroed. Feed a tube of known length through, "
+                      "then send 'D' and divide the raw encoder count by that length (mm) to "
+                      "get ENCODER_COUNTS_PER_MM."));
     break;
   case 'K': // $B65 / lamp $B565
     keyenceTrigger.fire();
