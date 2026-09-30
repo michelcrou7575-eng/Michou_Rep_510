@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.00.01
+// Ref: TGIS-510_cpp_V5.01.01
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -655,14 +655,22 @@ public:
     digitalWrite(gpio, LOW);
   }
 
-  void fire() // Non-blocking trigger pulse
+  void fire() // Normal non-blocking tube-inspection pulse
+  {
+    fireFor(PULSE_WIDTH_US);
+  }
+
+  bool fireFor(uint32_t widthUs)
   {
     if (!pending) // To prevent overlapping triggers
     {
       digitalWrite(gpio, HIGH);
       pulseStartUs = micros();
+      pulseWidthUs = widthUs;
       pending = true;
+      return true;
     }
+    return false;
   }
 
   // Comfortably wider than the 100us Keyence minimum and the MCP23017
@@ -672,7 +680,7 @@ public:
 
   void service()
   {
-    if (pending && (uint32_t)(micros() - pulseStartUs) >= PULSE_WIDTH_US)
+    if (pending && (uint32_t)(micros() - pulseStartUs) >= pulseWidthUs)
     {
       digitalWrite(gpio, LOW);
       pending = false;
@@ -682,10 +690,35 @@ public:
 private:
   uint8_t gpio = 0;
   uint32_t pulseStartUs = 0;
+  uint32_t pulseWidthUs = PULSE_WIDTH_US;
   bool pending = false;
 };
 
 KeyenceTrigger keyenceTrigger;
+bool keyenceTriggerTestEnabled = false;
+uint32_t lastKeyenceTestPulseMs = 0;
+constexpr uint32_t KEYENCE_TEST_PULSE_INTERVAL_MS = 500;
+constexpr uint32_t KEYENCE_TEST_PULSE_WIDTH_US = 100000UL;
+
+// On-demand bench-test aid: while enabled, fires a 100ms-wide pulse every
+// 500ms instead of the normal 500us production pulse -- long enough to
+// see/hear/scope without a real tube pass. Toggled by the repurposed 'K'
+// diag command (was a single manual fire()); production triggering
+// (serviceTubePositionTracking()) still calls the normal fire() and is
+// unaffected.
+void serviceKeyenceTriggerTest()
+{
+  if (!keyenceTriggerTestEnabled)
+    return;
+
+  uint32_t now = millis();
+
+  if ((uint32_t)(now - lastKeyenceTestPulseMs) >= KEYENCE_TEST_PULSE_INTERVAL_MS &&
+      keyenceTrigger.fireFor(KEYENCE_TEST_PULSE_WIDTH_US))
+  {
+    lastKeyenceTestPulseMs = now;
+  }
+}
 
 // =====================================================================
 // NS12 HMI / Memory Link protocol
@@ -2275,7 +2308,7 @@ constexpr bool kDiagLampAutoReset[NS12::DIAG_BUTTON_COUNT] = {
     true, true, true, true,     // STANDBY, WAIT_TUBE, INSPECTING, TUBE_GAP
     true, false, false, false,  // FAULT_STOP, IO1, IO2, IO3
     false, false, false, false, // IO4, IO5, IO6, IO7
-    false, false, false, true,  // OPTO_1, OPTO_2, OPTO_3, KEYENCE_TRIG
+    false, false, false, false, // IO8, IO9, YEL_LED_TEST, KEYENCE_TRIG
     true, true, true, true,     // PLC_STATUS, TEST_PATTERN, CAPTURE_REARM, BASELINE_CAPTURE
     true, true, true, true,     // FRAME_DUMP, REARM_BLANK, DIAGNOSTICS, BURST_PROBE
     true, true, true, false};   // WORD_VERIFY, WB_RB_SELFTEST, NO_OFFSET_TEST, MLX_LIVE_TOGGLE
@@ -3162,9 +3195,18 @@ void handleSerialCommand(char c)
                       "then send 'D' and divide the raw encoder count by that length (mm) to "
                       "get ENCODER_COUNTS_PER_MM."));
     break;
-  case 'K': // $B65 / lamp $B565
-    keyenceTrigger.fire();
-    Serial.println(F("[IO-TEST] Keyence trigger pulse fired (GPIO1)."));
+  case 'K': // $B65 / lamp $B565 -- toggles the periodic test pulse, not a single fire() anymore
+    keyenceTriggerTestEnabled = !keyenceTriggerTestEnabled;
+
+    if (keyenceTriggerTestEnabled)
+    {
+      lastKeyenceTestPulseMs = millis() - KEYENCE_TEST_PULSE_INTERVAL_MS;
+      Serial.println(F("[IO-TEST] Keyence periodic trigger ON: 100 ms pulse every 500 ms."));
+    }
+    else
+    {
+      Serial.println(F("[IO-TEST] Keyence periodic trigger OFF."));
+    }
     break;
   case 'P':
   { // $B66 / lamp $B566
@@ -3385,6 +3427,7 @@ void loop()
 
   encoder.service();
   keyenceTrigger.service();
+  serviceKeyenceTriggerTest();
 
   if (presenceEdgePending)
   {
