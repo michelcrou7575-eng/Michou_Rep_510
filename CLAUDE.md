@@ -297,3 +297,51 @@ standing rules and recent context carry over across sessions.
   own controls (see V4.15.64) -- currently only TEST has controls to gate.
   The panel's numbered IO block runs 1-10, not 1-9: button 10 replaced the
   old standalone "OPTO3" test (see V4.15.63).
+- NS12 baud rate is confirmed `38400` (matches `NS12::BAUD` in this file)
+  -- a different branch's claim of `9600` was checked and doesn't apply
+  here. The `claude/510-bottomer-hot-melt-monitor-3rq1ao` branch's PLC/S7
+  FC-block design content (FC105/FC155/FC156/FC160, DB10, design-notes)
+  belongs to the separate 410 Rotaliner project, not TGIS-510 -- nothing
+  from that branch needs to be preserved in this repo.
+
+## Reference diagnostics baseline
+
+A known-healthy `printDiagnostics()` ('D') snapshot, captured 2026-09-30
+on real hardware, for comparing against when something looks off:
+
+```
+---- DIAGNOSTICS ----
+State              : Standby
+Measured FPS       : 15.59
+Min/Max/Avg raw delta : -99 / 25 / -0
+Good/Failed frames : 6847 / 0
+Encoder count (raw/mm) : 3690182 / 3690182.0
+Capture state      : LATCHED
+Strip1 present/maxT/hotPx : 1 / 66.2 / 1
+Strip2 present/maxT/hotPx : 0 / 17.7 / 0
+NS12 WM attempts/failures/oversized : 6571 / 0 / 0
+NS12 RM attempts/success/writeFail/timeout/parseErr : 154 / 154 / 0 / 0 / 0
+NS12 RB attempts/success/writeFail/timeout/parseErr : 308 / 308 / 0 / 0 / 0
+NS12 WB attempts/failures : 876 / 0
+NS12 SB notify count/rejected : 12 / 0
+PLC_STATUS (commanded) : 3 (0=STOP/1=ALARM/2=WARNING/3=READY)
+PLC_CONTROL ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad : 1 / 1 / 0
+Screen Enable toggles ($B30-34)   : TREND FULL=off  SETUP=off  DIAG=off  TEST=ON  ALARM LOG=off
+HotMelt Start/End position (mm) : 0.0 / 0.0 (from HMI)
+Current HMI screen : 4
+Tube length          : not yet learned (no tube has cleared the sensor yet)
+Free heap          : 315.1 kB
+```
+
+Notes on this snapshot:
+- NS12 link fully healthy: zero failures/timeouts/parse errors across
+  WM/RM/RB/WB/SB.
+- `Encoder count (raw/mm)` shows the same number twice -- `ENCODER_COUNTS_PER_MM`
+  was still the `1.0f` placeholder when this was taken (pre-V5.00.01
+  calibration). A post-calibration baseline should show these two numbers
+  genuinely differ.
+- `TEST` was the only armed screen Enable toggle, consistent with bench
+  testing on the TEST screen.
+- Strip1 (Outer) detected glue on this pass (`1/66.2/1`), Strip2 (Inner)
+  didn't (`0/17.7/0`) -- not itself evidence of a bug, just worth noting
+  if it recurs unexpectedly.
