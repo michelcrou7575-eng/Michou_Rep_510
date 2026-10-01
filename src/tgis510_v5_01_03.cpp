@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.02
+// Ref: TGIS-510_cpp_V5.01.03
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2490,7 +2490,11 @@ namespace PlcComms
     READY = 3
   };
 
-  bool testOutputState[3] = {};
+  // Send_0-7, named to match the PLC-side DB56 "DIGITAL COMMS" layout.
+  // Bits 0-2 drive the real TO_PLC_COMM pins (OPTO_1/OPTO_2/ESP_OPTO_3);
+  // 3-7 have no physical pin (confirmed: staying at 3 wires each side) --
+  // tracked/logged only, ready for if more hardware is ever added.
+  bool testOutputState[8] = {};
 
   // Gray-ring position (0-7) -> physical pattern (bit0=OPTO_1, bit1=OPTO_2,
   // bit2=ESP_OPTO_3). Consecutive entries, and entry 7 -> entry 0, differ
@@ -2515,7 +2519,7 @@ namespace PlcComms
 
   void toggleTestBit(uint8_t bit)
   {
-    if (bit >= 3)
+    if (bit >= 8)
       return;
     testOutputState[bit] = !testOutputState[bit];
 
@@ -2529,10 +2533,11 @@ namespace PlcComms
       if (mcpOk)
         mcp.digitalWrite(McpPin::OPTO_2, !testOutputState[bit]);
     }
-    else
+    else if (bit == 2)
     {
       digitalWrite(Pins::ESP_OPTO_3, testOutputState[bit]);
     }
+    // bits 3-7: Send_3-7, no physical pin yet -- array-only.
   }
 } // namespace PlcComms
 
@@ -2540,6 +2545,20 @@ bool plcAcknowledge = false;
 bool plcMachineRunning = false;
 bool tubeIsBad = false; // FROM_PLC_COMM bit 2 -- Keyence pass/fail, relayed by the PLC; mirrored to $B2
 PlcComms::PlcStatus plcLastCommandedStatus = PlcComms::PlcStatus::STOP;
+
+// Bench-only digital comms test mode, matching the PLC-side DB56
+// "DIGITAL COMMS" Send_0-7/Receive_0-7 layout for 1:1 comparison while
+// commissioning the link. Enterable only from Standby/FaultStop (see the
+// '0' serial command), since it suspends the tube-inspection pipeline
+// (encoder/presence/position tracking, Keyence triggering, MLX90640
+// capture/processing, Word-Lamp matrix pacing) and the PLC_STATUS
+// auto-output, so manual Send_0-7 bit commands ('8'/'9'/'A' for the 3
+// real pins, 'E'/'O'/'Q'/'T'/'U' for the spare placeholder bits) have
+// TO_PLC_COMM to themselves. Deliberately NOT suspended: esp_task_wdt
+// feed, the HMI header status bits ($B0/$B1/$B80 -- an operator watching
+// the HMI should still see the ESP as alive, not faulty, during a bench
+// test), HMI button/screen polling, and the NS12 transport (ns12.service()).
+bool digitalCommsTestMode = false;
 
 // HMI header status bits ($B0/$B1/$B2/$B80) -- see their NS12::*_ADDR comment.
 constexpr uint32_t POWER_STATUS_BLINK_MS = 500;
@@ -2730,6 +2749,23 @@ void printDiagnostics()
                 (unsigned)plcLastCommandedStatus);
   Serial.printf("PLC_CONTROL ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad : %d / %d / %d\n", plcAcknowledge,
                 plcMachineRunning, tubeIsBad);
+  Serial.printf("Digital Comms Test Mode : %s\n", digitalCommsTestMode ? "ON" : "off");
+  Serial.print(F("Send_0-7    (PLC DB56 Send_0-7)    : "));
+
+  for (uint8_t i = 0; i < 8; i++)
+  {
+    Serial.printf("%d%s", PlcComms::testOutputState[i] ? 1 : 0, (i + 1 < 8) ? " " : "\n");
+  }
+
+  {
+    bool recvBits[8] = {plcAcknowledge, plcMachineRunning, tubeIsBad, false, false, false, false, false};
+    Serial.print(F("Receive_0-7 (PLC DB56 Receive_0-7) : "));
+
+    for (uint8_t i = 0; i < 8; i++)
+    {
+      Serial.printf("%d%s", recvBits[i] ? 1 : 0, (i + 1 < 8) ? " " : "\n");
+    }
+  }
   Serial.print(F("Screen Enable toggles ($B30-34)   : "));
 
   for (uint8_t i = 0; i < NS12::BUTTON_COUNT; i++)
@@ -3187,6 +3223,52 @@ void handleSerialCommand(char c)
                   PlcComms::testOutputState[2] ? "HIGH" : "LOW");
     break;
   }
+  case 'E': // Send_3 -- serial-only, no $B address, no physical pin yet
+    PlcComms::toggleTestBit(3);
+    Serial.printf("[DIGITAL-COMMS-TEST] Send_3 -> %s (no physical pin yet)\n",
+                  PlcComms::testOutputState[3] ? "HIGH" : "LOW");
+    break;
+  case 'O': // Send_4 -- serial-only, no $B address, no physical pin yet
+    PlcComms::toggleTestBit(4);
+    Serial.printf("[DIGITAL-COMMS-TEST] Send_4 -> %s (no physical pin yet)\n",
+                  PlcComms::testOutputState[4] ? "HIGH" : "LOW");
+    break;
+  case 'Q': // Send_5 -- serial-only, no $B address, no physical pin yet
+    PlcComms::toggleTestBit(5);
+    Serial.printf("[DIGITAL-COMMS-TEST] Send_5 -> %s (no physical pin yet)\n",
+                  PlcComms::testOutputState[5] ? "HIGH" : "LOW");
+    break;
+  case 'T': // Send_6 -- serial-only, no $B address, no physical pin yet
+    PlcComms::toggleTestBit(6);
+    Serial.printf("[DIGITAL-COMMS-TEST] Send_6 -> %s (no physical pin yet)\n",
+                  PlcComms::testOutputState[6] ? "HIGH" : "LOW");
+    break;
+  case 'U': // Send_7 -- serial-only, no $B address, no physical pin yet
+    PlcComms::toggleTestBit(7);
+    Serial.printf("[DIGITAL-COMMS-TEST] Send_7 -> %s (no physical pin yet)\n",
+                  PlcComms::testOutputState[7] ? "HIGH" : "LOW");
+    break;
+  case '0': // serial-only, no $B address -- digital comms test mode toggle, like 'Z'
+    if (!digitalCommsTestMode && state != SystemState::Standby && state != SystemState::FaultStop)
+    {
+      Serial.println(F("[DIGITAL-COMMS-TEST] Ignored -- only enterable from Standby or FaultStop (no tube in flight)."));
+      break;
+    }
+
+    digitalCommsTestMode = !digitalCommsTestMode;
+
+    if (digitalCommsTestMode)
+    {
+      Serial.println(F("[DIGITAL-COMMS-TEST] ON -- tube-inspection pipeline and PLC_STATUS auto-output "
+                        "suspended. Use '8'/'9'/'A' (Send_0-2, real pins) and 'E'/'O'/'Q'/'T'/'U' "
+                        "(Send_3-7, no pin yet) to drive TO_PLC_COMM bits directly; 'D' now also prints "
+                        "Send_0-7/Receive_0-7 to match the PLC's DB56."));
+    }
+    else
+    {
+      Serial.println(F("[DIGITAL-COMMS-TEST] OFF -- resuming normal operation."));
+    }
+    break;
   // Not a diag-button command -- on-demand troubleshooting sweep of all 7
   // MCP LEDs (ILED_R/G/B, ELED_R/G/B/Y), all bench-test-only per the user.
   // Same routine setup() runs once at boot; here it's repeatable any time
@@ -3448,16 +3530,25 @@ void loop()
 {
   esp_task_wdt_reset();
 
-  encoder.service();
-  keyenceTrigger.service();
-  serviceKeyenceTriggerTest();
-
-  if (presenceEdgePending)
+  // Tube-inspection pipeline: suspended while digitalCommsTestMode is
+  // active (bench-testing the 3-bit comms link doesn't need any of this
+  // running, and pausing it removes CPU/serial-log noise unrelated to
+  // what's being tested). See digitalCommsTestMode's declaration for the
+  // full list of what does and doesn't pause.
+  if (!digitalCommsTestMode)
   {
-    handlePresenceEdge();
+    encoder.service();
+    keyenceTrigger.service();
+    serviceKeyenceTriggerTest();
+
+    if (presenceEdgePending)
+    {
+      handlePresenceEdge();
+    }
+
+    serviceTubePositionTracking();
   }
 
-  serviceTubePositionTracking();
   serviceHmiInputPolling();
   serviceHmiButtonPolling();
 
@@ -3482,7 +3573,9 @@ void loop()
   // WARNING have no trigger condition defined yet -- this project has no
   // existing concept of a "warning, but not a fault" state to map onto
   // them; use 'P' to drive them manually for bench/PLC-program testing
-  // until a real condition is decided.
+  // until a real condition is decided. Suspended while digitalCommsTestMode
+  // is active so manual Send_0-7 bit commands have TO_PLC_COMM to themselves.
+  if (!digitalCommsTestMode)
   {
     PlcComms::PlcStatus wantStatus =
         (state == SystemState::FaultStop) ? PlcComms::PlcStatus::STOP : PlcComms::PlcStatus::READY;
@@ -3498,6 +3591,8 @@ void loop()
   // mirrors FaultStop, $B80 is a non-latching OR of every subsystem
   // failure the ESP currently knows about (NS12/PLC comms don't have a
   // live-health tracker yet, so they aren't in this OR until they do).
+  // Deliberately NOT gated by digitalCommsTestMode -- an operator watching
+  // the HMI should still see the ESP as alive (not faulty) during a bench test.
   {
     uint32_t now = millis();
 
@@ -3525,109 +3620,120 @@ void loop()
     }
   }
 
-  if (mlxInitialized)
+  // Camera capture/processing and HMI matrix telemetry: suspended while
+  // digitalCommsTestMode is active, same rationale as the tube-inspection
+  // pipeline above. ns12.service() (the NS12 transport pump itself) stays
+  // unconditional below -- HMI button polling above still needs it running.
+  if (!digitalCommsTestMode)
   {
-    uint32_t nowMs = millis();
-
-    if (nowMs - lastMlxFrameMs >= MLX_FRAME_PERIOD_MS)
+    if (mlxInitialized)
     {
-      lastMlxFrameMs = nowMs;
-      static float rawPixelsNow[32 * 24];
-      bool rawOk = readMlxRawCombined(rawPixelsNow);
-      lastFrameValid = rawOk;
+      uint32_t nowMs = millis();
 
-      if (rawOk)
+      if (nowMs - lastMlxFrameMs >= MLX_FRAME_PERIOD_MS)
       {
-        successfulFrameCount++;
-        fpsWindowFrameCount++;
-        consecutiveFrameFailures = 0;
-        updateFrameRate();
-        setStatusLed(0, 18, 0); // brief green heartbeat
+        lastMlxFrameMs = nowMs;
+        static float rawPixelsNow[32 * 24];
+        bool rawOk = readMlxRawCombined(rawPixelsNow);
+        lastFrameValid = rawOk;
 
-        if (rawBaselineCaptureInProgress)
+        if (rawOk)
         {
-          serviceRawBaselineCapture(rawPixelsNow);
-        }
-        else if (rawBaselineCaptured)
-        {
-          subtractBaseline(rawPixelsNow, mlxFrame);
-          calculateFrameStatistics();
-          capture.onNewFrame(mlxFrame);
-
-          if (continuousMlxTestMode && !pendingMatrix.active &&
-              nowMs - lastLiveMatrixPushMs >= LIVE_MATRIX_REFRESH_INTERVAL_MS)
-          {
-            lastLiveMatrixPushMs = nowMs;
-            pushWordLampMatrix(mlxFrame);
-          }
-
-          if (continuousMlxTestMode &&
-              nowMs - lastContinuousMlxPrintMs >= CONTINUOUS_MLX_PRINT_INTERVAL_MS)
-          {
-            lastContinuousMlxPrintMs = nowMs;
-            Serial.printf("[MLX-LIVE] min/max/avg raw delta=%.0f/%.0f/%.0f rejected=%u\n",
-                          minimumTemperatureC, maximumTemperatureC, averageTemperatureC,
-                          lastFrameRejectedPixelCount);
-          }
-        }
-        // else: no baseline yet and none in progress -- raw reads succeed
-        // (fps/heartbeat/recovery logic all still work) but nothing feeds
-        // the QC/HMI pipeline until 'B' is run once. See the 'B'/'X'
-        // serial commands.
-      }
-      else
-      {
-        failedFrameCount++;
-        consecutiveFrameFailures++;
-        setStatusLed(25, 8, 0);
-
-        if (consecutiveFrameFailures >= FRAME_FAILURE_RECOVERY_COUNT)
-        {
-          attemptCameraRecovery();
-        }
-      }
-    }
-  }
-  else
-  {
-    // Retry camera detection every second without locking the CPU.
-    static uint32_t lastRetryMs = 0;
-
-    if (millis() - lastRetryMs >= 1000UL)
-    {
-      lastRetryMs = millis();
-      mlxDetected = isI2CAddressPresent(MLX90640_I2CADDR_DEFAULT);
-
-      if (mlxDetected)
-      {
-        mlxInitialized = initializeMlx();
-
-        if (mlxInitialized)
-        {
+          successfulFrameCount++;
+          fpsWindowFrameCount++;
           consecutiveFrameFailures = 0;
-          fpsWindowStartMs = millis();
-          fpsWindowFrameCount = 0;
-          setStatusLed(0, 25, 0);
-          Serial.println(F("MLX90640 recovered and initialized."));
+          updateFrameRate();
+          setStatusLed(0, 18, 0); // brief green heartbeat
+
+          if (rawBaselineCaptureInProgress)
+          {
+            serviceRawBaselineCapture(rawPixelsNow);
+          }
+          else if (rawBaselineCaptured)
+          {
+            subtractBaseline(rawPixelsNow, mlxFrame);
+            calculateFrameStatistics();
+            capture.onNewFrame(mlxFrame);
+
+            if (continuousMlxTestMode && !pendingMatrix.active &&
+                nowMs - lastLiveMatrixPushMs >= LIVE_MATRIX_REFRESH_INTERVAL_MS)
+            {
+              lastLiveMatrixPushMs = nowMs;
+              pushWordLampMatrix(mlxFrame);
+            }
+
+            if (continuousMlxTestMode &&
+                nowMs - lastContinuousMlxPrintMs >= CONTINUOUS_MLX_PRINT_INTERVAL_MS)
+            {
+              lastContinuousMlxPrintMs = nowMs;
+              Serial.printf("[MLX-LIVE] min/max/avg raw delta=%.0f/%.0f/%.0f rejected=%u\n",
+                            minimumTemperatureC, maximumTemperatureC, averageTemperatureC,
+                            lastFrameRejectedPixelCount);
+            }
+          }
+          // else: no baseline yet and none in progress -- raw reads succeed
+          // (fps/heartbeat/recovery logic all still work) but nothing feeds
+          // the QC/HMI pipeline until 'B' is run once. See the 'B'/'X'
+          // serial commands.
+        }
+        else
+        {
+          failedFrameCount++;
+          consecutiveFrameFailures++;
+          setStatusLed(25, 8, 0);
+
+          if (consecutiveFrameFailures >= FRAME_FAILURE_RECOVERY_COUNT)
+          {
+            attemptCameraRecovery();
+          }
         }
       }
     }
-  }
+    else
+    {
+      // Retry camera detection every second without locking the CPU.
+      static uint32_t lastRetryMs = 0;
 
-  ns12.setTelemetry((uint16_t)(++heartbeatCounter),
-                    toUnsignedX10(measuredFramesPerSecond),
-                    toUnsignedX10(minimumTemperatureC),
-                    toUnsignedX10(maximumTemperatureC),
-                    toUnsignedX10(averageTemperatureC),
-                    (uint16_t)successfulFrameCount,
-                    (uint16_t)failedFrameCount,
-                    (uint16_t)state,
-                    buildStatusWord());
+      if (millis() - lastRetryMs >= 1000UL)
+      {
+        lastRetryMs = millis();
+        mlxDetected = isI2CAddressPresent(MLX90640_I2CADDR_DEFAULT);
+
+        if (mlxDetected)
+        {
+          mlxInitialized = initializeMlx();
+
+          if (mlxInitialized)
+          {
+            consecutiveFrameFailures = 0;
+            fpsWindowStartMs = millis();
+            fpsWindowFrameCount = 0;
+            setStatusLed(0, 25, 0);
+            Serial.println(F("MLX90640 recovered and initialized."));
+          }
+        }
+      }
+    }
+
+    ns12.setTelemetry((uint16_t)(++heartbeatCounter),
+                      toUnsignedX10(measuredFramesPerSecond),
+                      toUnsignedX10(minimumTemperatureC),
+                      toUnsignedX10(maximumTemperatureC),
+                      toUnsignedX10(averageTemperatureC),
+                      (uint16_t)successfulFrameCount,
+                      (uint16_t)failedFrameCount,
+                      (uint16_t)state,
+                      buildStatusWord());
+  } // !digitalCommsTestMode (camera capture/processing + telemetry)
+
   ns12.service();
 
-  serviceDisplayThrottle();
-  serviceMatrixPacing();
-  checkDisplayAutoFallback();
+  if (!digitalCommsTestMode)
+  {
+    serviceDisplayThrottle();
+    serviceMatrixPacing();
+    checkDisplayAutoFallback();
+  }
 
   if (Serial.available())
   {
