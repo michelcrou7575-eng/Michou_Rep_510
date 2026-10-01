@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_02.cpp`, i.e. V5.01.02 -- see "V5.00.00" below for how we
+`tgis510_v5_01_03.cpp`, i.e. V5.01.03 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -47,6 +47,39 @@ standing rules and recent context carry over across sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V5.01.03** -- Bench-only "digital comms test mode", from a bring-up
+  question about how to test the 3-bit comms link from both sides. The
+  user built a PLC-side `DATA_BLOCK "DIGITAL COMMS"` (DB56) with 8
+  `Send_0-7` / 8 `Receive_0-7` BOOLs for 1:1 bench comparison, then asked
+  for the ESP-side equivalent "while stopping the actual one" (the real
+  PLC_STATUS auto-output), then separately asked about pausing most ESP
+  functions while the test runs. Both landed together:
+  - `PlcComms::testOutputState[3]` grew to `[8]` (`Send_0-7`, matching
+    DB56's naming). `toggleTestBit()` extended to bits 0-7: bits 0-2 still
+    drive the real pins (unchanged -- `'8'`/`'9'`/`'A'`), bits 3-7 are
+    array-only placeholders (new `'E'`/`'O'`/`'Q'`/`'T'`/`'U'` serial
+    commands, no `$B` address, no physical pin -- confirmed staying at 3
+    wires each side, so these are just ready for if that ever changes).
+  - New `digitalCommsTestMode` flag, toggled by `'0'` (serial-only, no
+    `$B` address, like `'Z'`), enterable only from `Standby`/`FaultStop`
+    (same precedent as `scanMcpStatusLeds()`) since it suspends real
+    subsystems: the tube-inspection pipeline (encoder/presence/position
+    tracking, Keyence triggering, MLX90640 capture/processing, Word-Lamp
+    matrix pacing/telemetry) and the `PLC_STATUS` auto-output, so manual
+    `Send_0-7` commands have `TO_PLC_COMM` to themselves without
+    production logic fighting them on the next `loop()` iteration --
+    exactly the class of two-writers-one-array bug V4.15.71 already had to
+    fix once, avoided here by construction instead of by caution.
+    Deliberately NOT suspended: `esp_task_wdt_reset()`, the HMI header
+    status bits ($B0/$B1/$B80 -- an operator watching the HMI should still
+    see the ESP as alive, not faulty, during a bench test), HMI
+    button/screen polling, and `ns12.service()` (the NS12 transport pump
+    itself, since HMI polling still needs it running).
+  - `printDiagnostics()` ('D') now prints `Send_0-7`/`Receive_0-7` by the
+    same names as DB56, for direct side-by-side comparison with a PLC
+    variable-table watch during bring-up. `Receive_0-2` mirror
+    `plcAcknowledge`/`plcMachineRunning`/`tubeIsBad`; `Receive_3-7` are
+    placeholder `false` (no physical input pin yet, same as `Send_3-7`).
 - **V5.01.02** -- Gray-coded `TO_PLC_COMM` (`PLC_STATUS`, `OPTO_1`/
   `OPTO_2`/`ESP_OPTO_3`) instead of raw binary, from a design discussion
   about getting more usable signal out of a 3-wire link that's staying at
