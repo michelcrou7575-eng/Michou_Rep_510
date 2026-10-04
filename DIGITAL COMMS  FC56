@@ -1,0 +1,21 @@
+FUNCTION "DIGITAL COMMS" : VOID
+TITLE =Digital Comms FC56
+VERSION : 0.1
+
+BEGIN
+NETWORK
+TITLE =RX/TX from/to ESP32
+
+      A     M     10.1; 
+      JCN   NOPE; 
+      L     MB     6; 
+      T     DB60.DBB    0; 
+      JU    DONE; 
+
+NOPE: FP    M    220.4; 
+      L     0; 
+      T     DB60.DBB    0; 
+
+DONE: NOP   0; 
+END_FUNCTION
+
