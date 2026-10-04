@@ -1,0 +1,43 @@
+DATA_BLOCK "INPUTS DB"
+TITLE = DB61
+VERSION : 0.1
+
+
+  STRUCT 	
+   Input_00 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input
+   Input_01 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input
+   Input_02 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input
+   Input_03 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input
+   Input_04 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input
+   Input_05 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input
+   Input_06 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input
+   Input_07 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input
+   Comms_Input_Bit_0 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input - Comms Bit 0
+   Comms_Input_Bit_1 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input - Comms Bit 1
+   Comms_Input_Bit_2 : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input - Comms Bit 2
+   Keyence_BAD_Tube : BOOL ;	//321-1BH02-0AA0 - IO 16Bit Input - Keyence BAD Tube
+   Input_012 : BOOL ;	// - IO 32Bit Input
+   Input_013 : BOOL ;	// - IO 32Bit Input
+   Input_014 : BOOL ;	// - IO 32Bit Input
+   Input_015 : BOOL ;	// - IO 32Bit Input
+  END_STRUCT ;
+  	
+BEGIN
+   Input_00 := FALSE; 
+   Input_01 := FALSE; 
+   Input_02 := FALSE; 
+   Input_03 := FALSE; 
+   Input_04 := FALSE; 
+   Input_05 := FALSE; 
+   Input_06 := FALSE; 
+   Input_07 := FALSE; 
+   Comms_Input_Bit_0 := FALSE; 
+   Comms_Input_Bit_1 := FALSE; 
+   Comms_Input_Bit_2 := FALSE; 
+   Keyence_BAD_Tube := FALSE; 
+   Input_012 := FALSE; 
+   Input_013 := FALSE; 
+   Input_014 := FALSE; 
+   Input_015 := FALSE; 
+END_DATA_BLOCK
+
