@@ -1,0 +1,42 @@
+DATA_BLOCK "DIGITAL COMMS"
+TITLE = DB56 
+VERSION : 0.1
+
+
+  STRUCT 	
+   Send_0 : BOOL ;	//Send to ESP 0
+   Send_1 : BOOL ;	//Send to ESP 1
+   Send_2 : BOOL ;	//Send to ESP 2
+   Send_3 : BOOL ;	//Send to ESP 3
+   Send_4 : BOOL ;	//Send to ESP 4
+   Send_5 : BOOL ;	//Send to ESP 5
+   Send_6 : BOOL ;	//Send to ESP 6
+   Send_7 : BOOL ;	//Send to ESP 7
+   Receive_0 : BOOL ;	//Receive from ESP 0
+   Receive_1 : BOOL ;	//Receive from ESP 1
+   Receive_2 : BOOL ;	//Receive from ESP 2
+   Receive_3 : BOOL ;	//Receive from ESP 3
+   Receive_4 : BOOL ;	//Receive from ESP 4
+   Receive_5 : BOOL ;	//Receive from ESP 5
+   Receive_6 : BOOL ;	//Receive from ESP 6
+   Receive_7 : BOOL ;	//Receive from ESP 7
+  END_STRUCT ;	
+BEGIN
+   Send_0 := FALSE; 
+   Send_1 := FALSE; 
+   Send_2 := FALSE; 
+   Send_3 := FALSE; 
+   Send_4 := FALSE; 
+   Send_5 := FALSE; 
+   Send_6 := FALSE; 
+   Send_7 := FALSE; 
+   Receive_0 := FALSE; 
+   Receive_1 := FALSE; 
+   Receive_2 := FALSE; 
+   Receive_3 := FALSE; 
+   Receive_4 := FALSE; 
+   Receive_5 := FALSE; 
+   Receive_6 := FALSE; 
+   Receive_7 := FALSE; 
+END_DATA_BLOCK
+
