@@ -1,0 +1,136 @@
+DATA_BLOCK "OUTPUTS DB"
+TITLE =
+VERSION : 0.1
+
+
+  STRUCT 	
+   FM350_DQ0 : BOOL ;	// FM350_DQ   DB1.DBB   22
+   FM350_DQ1 : BOOL ;	// FM350_DQ   DB1.DBB   22
+   FM350_DQ2 : BOOL ;	// FM350_DQ   DB1.DBB   22
+   FM350_DQ3 : BOOL ;	// FM350_DQ   DB1.DBB   22
+   FM350_DQ4_COMMS_BIT0 : BOOL ;	// FM350_DQ   DB1.DBB   22
+   FM350_DQ5_COMMS_BIT1 : BOOL ;	// FM350_DQ   DB1.DBB   22
+   FM350_DQ6_COMMS_BIT2 : BOOL ;	// FM350_DQ   DB1.DBB   22
+   FM350_DQ7 : BOOL ;	// FM350_DQ   DB1.DBB   22
+   Output_08_11 : DWORD ;	
+   Output_12_15 : DWORD ;	
+   Output_16_19 : DWORD ;	
+   Output_20_23 : DWORD ;	
+   Output_24_25 : WORD ;	// 
+   Output_26 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_27 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_28 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_29 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_30 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_31 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_32 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_33 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_34 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_35 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_36 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_37 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_38 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_39 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_40 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_41 : BOOL ;	// IM151-1 DI16/DO16 ET200S
+   Output_42_45 : DWORD ;	
+   Output_46_49 : DWORD ;	
+   Output_50 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_51 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_52 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_53 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_54 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_55 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_56 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_57 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_58 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_59 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_60 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_61 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_62 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_63 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_64 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_65 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_66 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_67 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_68 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_69 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_70 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_71 : BOOL ;	// IM153-1 SM321 DO32
+   Output_72 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_73 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_74 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_75 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_76 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_77 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_78 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_79 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_80 : BOOL ;	// IM153-1 SM321 DO32 
+   Output_81 : BOOL ;	// IM153-1 SM321 DO32 
+  END_STRUCT ;	
+BEGIN
+   FM350_DQ0 := FALSE; 
+   FM350_DQ1 := FALSE; 
+   FM350_DQ2 := FALSE; 
+   FM350_DQ3 := FALSE; 
+   FM350_DQ4_COMMS_BIT0 := FALSE; 
+   FM350_DQ5_COMMS_BIT1 := FALSE; 
+   FM350_DQ6_COMMS_BIT2 := FALSE; 
+   FM350_DQ7 := FALSE; 
+   Output_08_11 := DW#16#0; 
+   Output_12_15 := DW#16#0; 
+   Output_16_19 := DW#16#0; 
+   Output_20_23 := DW#16#0; 
+   Output_24_25 := W#16#0; 
+   Output_26 := FALSE; 
+   Output_27 := FALSE; 
+   Output_28 := FALSE; 
+   Output_29 := FALSE; 
+   Output_30 := FALSE; 
+   Output_31 := FALSE; 
+   Output_32 := FALSE; 
+   Output_33 := FALSE; 
+   Output_34 := FALSE; 
+   Output_35 := FALSE; 
+   Output_36 := FALSE; 
+   Output_37 := FALSE; 
+   Output_38 := FALSE; 
+   Output_39 := FALSE; 
+   Output_40 := FALSE; 
+   Output_41 := FALSE; 
+   Output_42_45 := DW#16#0; 
+   Output_46_49 := DW#16#0; 
+   Output_50 := FALSE; 
+   Output_51 := FALSE; 
+   Output_52 := FALSE; 
+   Output_53 := FALSE; 
+   Output_54 := FALSE; 
+   Output_55 := FALSE; 
+   Output_56 := FALSE; 
+   Output_57 := FALSE; 
+   Output_58 := FALSE; 
+   Output_59 := FALSE; 
+   Output_60 := FALSE; 
+   Output_61 := FALSE; 
+   Output_62 := FALSE; 
+   Output_63 := FALSE; 
+   Output_64 := FALSE; 
+   Output_65 := FALSE; 
+   Output_66 := FALSE; 
+   Output_67 := FALSE; 
+   Output_68 := FALSE; 
+   Output_69 := FALSE; 
+   Output_70 := FALSE; 
+   Output_71 := FALSE; 
+   Output_72 := FALSE; 
+   Output_73 := FALSE; 
+   Output_74 := FALSE; 
+   Output_75 := FALSE; 
+   Output_76 := FALSE; 
+   Output_77 := FALSE; 
+   Output_78 := FALSE; 
+   Output_79 := FALSE; 
+   Output_80 := FALSE; 
+   Output_81 := FALSE; 
+END_DATA_BLOCK
+
