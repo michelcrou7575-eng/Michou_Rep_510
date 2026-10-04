@@ -1,0 +1,103 @@
+FUNCTION "DIGITAL OUT MAPPING" : VOID
+TITLE =Function Mapping Digital Outputs FC60
+VERSION : 0.1
+
+
+VAR_TEMP
+  MAIN_POWER : BOOL ;	
+END_VAR
+BEGIN
+NETWORK
+TITLE =Open DB
+
+      OPN   "OUTPUTS DB"; 
+
+NETWORK
+TITLE =First Run Init
+
+      A     M      1.0; 
+      JCN   NINT; 
+      L     0; 
+      T     DBB    0; 
+      T     DBW   20; 
+      T     DBW   30; 
+
+NINT: NOP   0; 
+NETWORK
+TITLE =Digital Output 0   Outputs FM350-2 Fast Outputs DC24V 
+//- Q 0.0  "FM350_DB" DQ0
+//- Q 0.1  "FM350_DB" DQ1
+//- Q 0.2  "FM350_DB" DQ2
+//- Q 0.3  "FM350_DB" DQ3
+//- Q 0.4  "FM350_DB" DQ4 - Comms Bit 0
+//- Q 0.5  "FM350_DB" DQ5 - Comms Bit 1
+//- Q 0.6  "FM350_DB" DQ6 - Comms Bit 2
+//- Q 0.7  "FM350_DB" DQ7
+      L     DBB    0; 
+      T     DB1.DBB   22; //    "FM350_DB".CONTROL_SIGNALS.SETS
+
+NETWORK
+TITLE =Digital Output 20 Outputs IM151-1 DI16/DO16 ET200S (Slots 20-21)
+//Top of +N30B Panel
+//- Q  20.0 Free
+//- Q  20.1 Free
+//- Q  20.2 Free
+//- Q  20.3 Free
+//- Q  20.4 Free
+//- Q  20.5 Free
+//- Q  20.6 Free
+//- Q  20.7 Free
+//Top of +N30B Panel
+//- Q  21.0 Free
+//- Q  21.1 Free
+//- Q  21.2 Free
+//- Q  21.3 Free
+//- Q  21.4 Free
+//- Q  21.5 Free
+//- Q  21.6 Free
+//- Q  21.7 Free
+      L     DBW   20; 
+      T     QW    20; 
+
+NETWORK
+TITLE =Digital Output 30 Outputs IM153-1 SM321 DO32 DC24V (Slots 30-33)
+//+E101 Panel
+//- Q  30.0 Free
+//- Q  30.1 Free
+//- Q  30.2 Free
+//- Q  30.3 Free
+//- Q  30.4 Free
+//- Q  30.5 Free
+//- Q  30.6 Free
+//- Q  30.7 Free
+//+E101 Panel
+//- Q  31.0 Free
+//- Q  31.1 Free
+//- Q  31.2 Free
+//- Q  31.3 Free
+//- Q  31.4 Free
+//- Q  31.5 Free
+//- Q  31.6 Free
+//- Q  31.7 Free
+//+E101 Panel
+//- Q  32.0 Free
+//- Q  32.1 Free
+//- Q  32.2 Free
+//- Q  32.3 Free
+//- Q  32.4 Free
+//- Q  32.5 Free
+//- Q  32.6 Free
+//- Q  32.7 Free
+//+E101 Panel
+//- Q  33.0 Free
+//- Q  33.1 Free
+//- Q  33.2 Free
+//- Q  33.3 Free
+//- Q  33.4 Free
+//- Q  33.5 Free
+//- Q  33.6 Free
+//- Q  33.7 Free
+      L     DBD   30; 
+      T     QD    30; 
+END_FUNCTION
+
