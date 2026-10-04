@@ -1,0 +1,109 @@
+FUNCTION "DIGITAL IN MAPPING" : VOID
+TITLE =Function Mapping Digital Inputs to FC61
+VERSION : 0.1
+
+BEGIN
+NETWORK
+TITLE =Digital Input Read + Open DB
+
+      OPN   "INPUTS DB"; 
+
+NETWORK
+TITLE =Digital Input 0   Inputs SM321 DI16x  DC24V (IB 0)
+//
+//- I 0.0 Free
+//- I 0.1 Free
+//- I 0.2 Free
+//- I 0.3 Free
+//- I 0.4 Free
+//- I 0.5 Free
+//- I 0.6 Free
+//- I 0.7 Free
+//
+//- I 1.0 Comms Bit 0_IN
+//- I 1.1 Comms Bit 1_IN
+//- I 1.2 Comms Bit 2_IN
+//- I 1.3 Keyence_BAD_TUBE
+//- I 1.4 Free
+//- I 1.5 Free
+//- I 1.6 Free
+//- I 1.7 Free
+      L     IW     0; 
+      T     DBW    0; 
+NETWORK
+TITLE =Digital Input 20 Outputs IM151-1 DI16/DO16 ET200S (Slots 20-21)
+//Top of +N30B Panel
+//
+//- I  20.0 Free
+//- I  20.1 Free
+//- I  20.2 Free
+//- I  20.3 Free
+//- I  20.4 Free
+//- I  20.5 Free
+//- I  20.6 Free
+//- I  20.7 Free
+//
+//Top of +N30B Panel
+//
+//- I  21.0 Free
+//- I  21.1 Free
+//- I  21.2 Free
+//- I  21.3 Free
+//- I  21.4 Free
+//- I  21.5 Free
+//- I  21.6 Free
+//- I  21.7 Free
+      L     IW    20; 
+      T     DBW   20; 
+
+NETWORK
+TITLE =Digital Input 30 Inputs IM153-1 SM321 DI32 DC24V (Slots 30-33)
+//+E101 Panel
+//
+//- I  30.0 Free
+//- I  30.1 Free
+//- I  30.2 Free
+//- I  30.3 Free
+//- I  30.4 Free
+//- I  30.5 Free
+//- I  30.6 Free
+//- I  30.7 Free
+//
+//+E101 Panel
+//
+//- I  31.0 Free
+//- I  31.1 Free
+//- I  31.2 Free
+//- I  31.3 Free
+//- I  31.4 Free
+//- I  31.5 Free
+//- I  31.6 Free
+//- I  31.7 Free
+//
+//+E101 Panel
+//
+//- I  32.0 Free
+//- I  32.1 Free
+//- I  32.2 Free
+//- I  32.3 Free
+//- I  32.4 Free
+//- I  32.5 Free
+//- I  32.6 Free
+//- I  32.7 Free
+//
+//+E101 Panel
+//
+//- I  33.0 Free
+//- I  33.1 Free
+//- I  33.2 Free
+//- I  33.3 Free
+//- I  33.4 Free
+//- I  33.5 Free
+//- I  33.6 Free
+//- I  33.7 Free
+
+      L     IW    30; 
+      T     DBW   30; 
+
+END_FUNCTION
+
