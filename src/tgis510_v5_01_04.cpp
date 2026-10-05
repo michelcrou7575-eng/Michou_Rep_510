@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.03
+// Ref: TGIS-510_cpp_V5.01.04
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2480,6 +2480,59 @@ uint32_t buttonPressCount[NS12::BUTTON_COUNT] = {};
 //   consistency; move it out of servicePlcControl() if it ever needs to
 //   react faster than Standby/TubeGap allows.
 // =====================================================================
+
+// Generic 3-bit Gray-code codec -- no physical pin or PlcStatus
+// assumptions here on purpose, kept separate so it can be tested on its
+// own before anything wires into it. Same table as PlcComms::GRAY3_ENCODE
+// below, factored out so a future user can attribute In0-7/Out0-7 to
+// whatever they choose once this is verified reliable in isolation.
+// Mirrors FC56 "DIGITAL COMMS" (generic Gray encoder/decoder version) on
+// the PLC side -- same table there, so the two interoperate once wired.
+namespace Gray3
+{
+  constexpr uint8_t ENCODE[8] = {0, 4, 6, 2, 3, 7, 5, 1};
+  constexpr uint8_t DECODE[8] = {0, 7, 3, 4, 1, 6, 2, 5};
+
+  // in[0..7]: one-hot, exactly one TRUE -- which state to encode.
+  // out[0..2]: the resulting Gray-coded pattern (bit0/bit1/bit2).
+  // Precondition: exactly one of in[] is true. If violated, this picks
+  // the lowest-index true entry and ignores the rest -- NOTE this
+  // differs from FC56's STL version, which ORs together the patterns of
+  // every simultaneously-true input instead of picking one. Don't rely
+  // on either behavior; keep inputs one-hot.
+  void encode(const bool in[8], bool out[3])
+  {
+    uint8_t index = 0;
+
+    for (uint8_t i = 0; i < 8; i++)
+    {
+      if (in[i])
+      {
+        index = i;
+        break;
+      }
+    }
+
+    uint8_t pattern = ENCODE[index];
+    out[0] = (pattern >> 0) & 1;
+    out[1] = (pattern >> 1) & 1;
+    out[2] = (pattern >> 2) & 1;
+  }
+
+  // in[0..2]: a Gray-coded pattern (bit0/bit1/bit2).
+  // out[0..7]: one-hot, exactly one TRUE -- the decoded state.
+  void decode(const bool in[3], bool out[8])
+  {
+    uint8_t pattern = (in[0] ? 1 : 0) | (in[1] ? 2 : 0) | (in[2] ? 4 : 0);
+    uint8_t index = DECODE[pattern];
+
+    for (uint8_t i = 0; i < 8; i++)
+    {
+      out[i] = (i == index);
+    }
+  }
+} // namespace Gray3
+
 namespace PlcComms
 {
   enum class PlcStatus : uint8_t
