@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_03.cpp`, i.e. V5.01.03 -- see "V5.00.00" below for how we
+`tgis510_v5_01_04.cpp`, i.e. V5.01.04 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -47,6 +47,25 @@ standing rules and recent context carry over across sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V5.01.04** -- New `Gray3` namespace: a generic, standalone 3-bit
+  Gray-code encoder/decoder (`encode()`/`decode()`), deliberately
+  decoupled from `PlcComms`/`PlcStatus`/any physical pin -- the user
+  wants to attribute `In0-7`/`Out0-7` to real signals themselves, only
+  after testing the codec's reliability in isolation. Same verified table
+  (`0,4,6,2,3,7,5,1` / `0,7,3,4,1,6,2,5`) as `PlcComms::GRAY3_ENCODE`
+  (V5.01.02), factored out rather than duplicated with new values, so
+  this and the PLC-side equivalent (`FC56 "DIGITAL COMMS"`, rewritten the
+  same session to the same generic shape: `In0-7` one-hot -> `TxBit0-2`
+  Gray-coded; `RxBit0-2` Gray-coded -> `Out0-7` one-hot, no `DB56`/FM350
+  wiring baked in) are guaranteed to decode what the other encodes.
+  `encode()`'s documented precondition is exactly one of `in[]` true
+  (one-hot) -- flagged in both the C++ comment and FC56's STL header that
+  the two sides currently handle a violation of that differently (C++
+  picks the lowest-index true entry and ignores the rest; the STL version
+  ORs together every simultaneously-true input's pattern instead), since
+  nothing should rely on either behavior rather than just keeping inputs
+  one-hot. Not wired into anything yet -- no caller, no version bump to
+  `PlcComms`/`setStatus()`, by design, until it's been tested standalone.
 - **V5.01.03** -- Bench-only "digital comms test mode", from a bring-up
   question about how to test the 3-bit comms link from both sides. The
   user built a PLC-side `DATA_BLOCK "DIGITAL COMMS"` (DB56) with 8
