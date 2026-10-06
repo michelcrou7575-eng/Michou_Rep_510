@@ -1,0 +1,246 @@
+/* 1. Core Layout & Backgrounds (All Pages) */
+    body, 
+    html, 
+    .bg-bg-000, 
+    .bg-bg-100, 
+    .bg-bg-200, 
+    div[class*="bg-bg-"],
+    main {
+        background-color: #31251e !important;
+        color: #c4bc2f !important;
+    }
+
+    /* Sidebar / Navigation panels / Artifact headers */
+    .bg-bg-300,
+    nav,
+    aside,
+    [class*="bg-sidebar"] {
+        background-color: #1e3f40 !important;
+    }
+
+    /* 2. Typography & Core Text */
+    p, span, h1, h2, h3, h4, h5, h6, li, strong {
+        color: #bfbfbc !important;
+    }
+    
+    /* Muted text variations (dates, secondary elements) */
+    .text-text-200,
+    .text-text-300,
+    .text-muted-foreground {
+        color: #bfbfbc !important;
+    }
+
+    /* 3. High-Contrast Usage Limits & System Banners */
+    div[class*="text-text-500"],
+    div[class*="text-text-400"],
+    .text-sm.text-muted-foreground,
+    [class*="text-secondary"],
+    span:title {
+        color: #c16f26 !important; 
+    }
+
+    /* Usage warnings, limit panels, and banner notifications */
+    div[class*="border-warning"], 
+    div[class*="bg-warning"],
+    div[role="alert"],
+    .bg-accent\/10 {
+        background-color: #9f5117 !important; 
+        border: 1px solid #52c47a !important; 
+        color: #933975 !important;
+    }
+
+    /* Links and buttons inside notifications/usage updates */
+    div[role="alert"] a,
+    div[role="alert"] button,
+    [class*="upgrade-link"] {
+        color: #b2ca3d !important;
+        font-weight: bold !important;
+    }
+
+    /* 4. The Green Accent & Keywords */
+    a, 
+    .text-accent, 
+    .text-hyperlink,
+    button[class*="text-bg-"],
+    .font-semibold.text-text-100 {
+        color: #52c47a !important;
+    }
+
+    /* Active navigation items and buttons matching the theme */
+    [aria-current="page"],
+    .bg-accent-main {
+        background-color: #86573d !important;
+        color: #52c47a !important;
+    }
+
+    *:focus-visible {
+        outline: 2px solid #a69015c7 !important;
+    }
+
+    /* 5. Chat Bubbles & User Input */
+    /* User prompt container */
+    .bg-bg-400,
+    div[data-testid="user-message"] {
+        background-color: #0c232b !important;
+        border: 1px solid #28a8bd !important;
+        border-radius: 10px !important;       
+    }
+
+    /* Claude's response container */
+    div[data-testid="assistant-message"] {
+        background-color: #685a51 !important;
+    }
+
+    /* Text area / Input box */
+    fieldset,
+    div[role="textarea"],
+    div[contenteditable="true"],
+    div[class*="border-token-border-"] {
+        background-color: #534136 !important;
+        border-color: #a0b912 !important;
+        color: #f44646 !important;
+    }
+
+
+
+
+
+
+
+     /* 6. Code Blocks & Syntax Highlighting (Separated) */
+    /* Standalone Large Code Blocks */
+    pre {
+        background-color: #2b1a12 !important;
+        border: 1px solid #2d241f !important;
+        padding: 12px !important;
+        display: block !important;
+    }
+    
+    pre code {
+        background-color: transparent !important; 
+        color: #e2deda !important;
+        border: none !important;
+    }
+
+    /* ACCURATE FIXED TARGETING: Limits the background wipe only to the main message area to avoid breaking your sidebar */
+    main div[data-transcript-row],
+    main div[data-cds="AssistantMessage"],
+    main div[data-cds="TurnStatusStep"],
+    main div[data-cds="TurnStatus"],
+    main div[data-cds-row],
+    main [class*="compact:"],
+    main [class*="group/step"],
+    main div[style*="--cds-outset-x"],
+    div[data-testid="assistant-message"] div {
+        background-color: #31251e !important;
+        background: #31251e !important;
+        border-color: transparent !important;
+        box-shadow: none !important;
+        --cds-surface-1: #31251e !important;
+        --cds-surface-2: #31251e !important;
+    }
+
+    /* Inline Code Snippets - Preserves standard formatting inside messages */
+    p code, 
+    li code,
+    code[data-epitaxy-inline-code] {
+        background-color: #241d19 !important; 
+        color: #52c47a !important;            
+        border: 1px solid #332924 !important;  
+        padding: 2px 6px !important;
+        border-radius: 4px !important;
+    }
+
+    /* Code token styling */
+    .token.keyword,
+    .token.builtin,
+    .token.class-name,
+    .token.function,
+    .token.operator {
+        color: #52c47a !important;
+        font-weight: bold !important;
+    }
+    
+    .token.string,
+    .token.number,
+    .token.property {
+        color: #cfc69b !important; 
+    }
+
+    .token.comment {
+        color: #6e665f !important; 
+    }
+
+
+
+
+
+
+    /* 7. UI Interactive Elements & Hover States (Fixed Targeting) */
+    .hover\:bg-bg-200:hover,
+    .hover\:bg-bg-300:hover,
+    button:hover {
+        background-color: #735f29 !important;
+    }
+
+    /* Explicitly prevent invisible structural anchors from drawing backgrounds on hover */
+    a.cds-reset:hover {
+        background-color: transparent !important;
+    }
+
+    /* Standard standalone link hovers (like plain text links) */
+    a:not(.cds-reset):hover {
+        background-color: #735f29 !important;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+    }
+    ::-webkit-scrollbar-track {
+        background: #1a1512 !important;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #10550c !important;
+        border-radius: 5px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #880b14 !important; 
+    }
+
+    /* 9. Interactive Input Message Bubble Control */
+    div:has(> fieldset),
+    fieldset,
+    .bg-bg-000:has(div[contenteditable="true"]),
+    div[class*="bg-bg-400"]:has(div[contenteditable="true"]) {
+        background-color: #241d1a !important; 
+        border: 1px solid #b52 !important;  
+        border-radius: 16px !important;       
+    }
+
+    div[contenteditable="true"],
+    div[role="textarea"],
+    .w-full.bg-transparent.outline-none {
+        color: #50b6bd !important;            
+        background: rgb(0 0 0) !important;
+    }
+
+    div[contenteditable="true"]:empty::before,
+    .text-text-500\/40,
+    [data-placeholder]::placeholder {
+        color: #7a726b !important;            
+    }
+
+    div:has(> fieldset) button,
+    fieldset button,
+    div[class*="text-text-300"] button,
+    .text-text-200\/80 {
+        color: #12c9f4fa !important;            
+    }
+
+    div:has(> fieldset) button:hover,
+    fieldset button:hover {
+        color: #a496df !important;            
+        background-color: #663317 !important;  
+    }
