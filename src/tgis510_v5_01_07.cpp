@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.06
+// Ref: TGIS-510_cpp_V5.01.07
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2711,6 +2711,15 @@ struct FlagRelayRx
   }
 };
 
+// Bench-test instance for the '#' serial command below. service() is
+// deliberately NOT called from loop() yet -- that needs real GPIO
+// numbers to actually transmit, still blocked on confirming a 3rd free
+// pin (only GPIO10/GPIO11 are verified free from this file's own Pins
+// comments). setFlag()/the pending-queue logic can be exercised and
+// observed right now without that; service()/the physical loopback test
+// is the next step once the pin question is settled.
+FlagRelayTx flagRelayTx;
+
 namespace PlcComms
 {
   enum class PlcStatus : uint8_t
@@ -3401,8 +3410,70 @@ void scanMcpStatusLeds()
   Serial.println(F("[SETUP] MCP LED sweep complete."));
 }
 
+// FlagRelayTx bench-test harness: '#' + index digit (0-7) + value digit
+// (0/1), e.g. "#31" = setFlag(3, true). Every A-Z/0-9 single-char slot
+// in the switch below is already taken, so this uses a symbol prefix --
+// confirmed safe (zero collision risk) since the switch's default case
+// silently ignores every character it doesn't have a case for, and none
+// of its cases match a non-alphanumeric character. Spans multiple
+// handleSerialCommand() calls (one per keystroke), non-blocking --
+// typing "setFlag(3, true)" or similar free text is NOT safe right now,
+// since every character in it gets dispatched independently through the
+// switch below (this is exactly what happened the first time this was
+// tried: the '3' in that string hit case '3', an unrelated IO3 toggle).
+enum class FlagTestState
+{
+  Idle,
+  AwaitingIndex,
+  AwaitingValue
+};
+FlagTestState flagTestState = FlagTestState::Idle;
+uint8_t flagTestIndex = 0;
+
 void handleSerialCommand(char c)
 {
+  if (flagTestState == FlagTestState::AwaitingIndex)
+  {
+    flagTestState = FlagTestState::Idle;
+    if (c >= '0' && c <= '7')
+    {
+      flagTestIndex = c - '0';
+      flagTestState = FlagTestState::AwaitingValue;
+      Serial.printf("[FLAG-TEST] Index %u -- now send value (0/1)...\n", flagTestIndex);
+    }
+    else
+    {
+      Serial.println(F("[FLAG-TEST] Invalid index (need 0-7) -- cancelled."));
+    }
+    return;
+  }
+
+  if (flagTestState == FlagTestState::AwaitingValue)
+  {
+    flagTestState = FlagTestState::Idle;
+    if (c == '0' || c == '1')
+    {
+      bool value = (c == '1');
+      flagRelayTx.setFlag(flagTestIndex, value);
+      Serial.printf("[FLAG-TEST] setFlag(%u, %s) queued -- desired=%d committed=%d pending=%d "
+                    "(service() not running yet, see V5.01.06 comment)\n",
+                    flagTestIndex, value ? "true" : "false", flagRelayTx.desired[flagTestIndex],
+                    flagRelayTx.committed[flagTestIndex], flagRelayTx.pending[flagTestIndex]);
+    }
+    else
+    {
+      Serial.println(F("[FLAG-TEST] Invalid value (need 0 or 1) -- cancelled."));
+    }
+    return;
+  }
+
+  if (c == '#')
+  {
+    flagTestState = FlagTestState::AwaitingIndex;
+    Serial.println(F("[FLAG-TEST] Send flag index (0-7)..."));
+    return;
+  }
+
   switch (c)
   {
   case 'S':
