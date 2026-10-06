@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_04.cpp`, i.e. V5.01.04 -- see "V5.00.00" below for how we
+`tgis510_v5_01_05.cpp`, i.e. V5.01.05 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -47,6 +47,31 @@ standing rules and recent context carry over across sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V5.01.05** -- New `Gray3Transceiver` struct: the hardware-facing
+  settling-delay wrapper around `Gray3::encode()` from a follow-up
+  question about the user's own "2-frame transceiver"/`PIN_TX_D0`/
+  `PIN_TX_D1`/`PIN_TX_STR`/`q_Tx_STR` description, worked through rather
+  than taken at face value since parts of it didn't add up: "packing 8
+  discrete booleans into a 3-bit integer (0-7)" is exactly `Gray3`'s
+  existing one-hot encode (no redesign needed there), and a literal 2
+  data wires + 1 dedicated strobe wire is mathematically impossible to
+  rule in -- 2 bits only carry 4 values, not the 8 needed, and there's no
+  spare 4th wire anyway (confirmed stuck at 3 each side). So `PIN_TX_STR`
+  is read as the *software-side* "data is now settled" event, not a
+  physical pin -- consistent with "no wiring" being the explicit reason
+  `Gray3` stays pure/pin-free (V5.01.04): the settle timer can't live
+  inside a portable, pin-agnostic codec, so it lives in this new,
+  separate, caller-owned struct instead (not a namespace singleton, so
+  more than one independent Gray3 link could run at once without sharing
+  state). `beginTransmit()` writes the encoded pattern to 3
+  caller-supplied pins and starts a `millis()`-based settle timer;
+  `settled()` polls it. Deliberately non-blocking (no `delay()`, despite
+  the user's literal "`delay(5)`" suggestion) to match this file's own
+  standing non-blocking design elsewhere -- flagged as a conscious
+  deviation, not silently substituted, since a real blocking
+  `delay(SETTLE_MS)` would also work fine if a given call site truly has
+  no other timing to protect. Still not wired to real pins -- same as
+  `Gray3` itself, that's still the user's own call to make once tested.
 - **V5.01.04** -- New `Gray3` namespace: a generic, standalone 3-bit
   Gray-code encoder/decoder (`encode()`/`decode()`), deliberately
   decoupled from `PlcComms`/`PlcStatus`/any physical pin -- the user
