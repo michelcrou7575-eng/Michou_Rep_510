@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_09.cpp`, i.e. V5.01.09 -- see "V5.00.00" below for how we
+`tgis510_v5_01_10.cpp`, i.e. V5.01.10 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -45,6 +45,29 @@ standing rules and recent context carry over across sessions.
   genuinely blocked on a decision only the user can make (e.g. a
   functional spec, a hardware wiring choice, an explicit rule override).
 
+- **V5.01.10** -- Freed all 28 diag-button serial commands off the PC
+  keyboard, per the user's explicit request after they questioned why
+  `'S'` was needed when the HMI's own `ST-BY` button already does the
+  same thing (it does -- `applyDiagButtonUpdate()` calls
+  `handleSerialCommand(kDiagCommandChars[i])` for every diag button, so
+  the two were always the same code, just two entry points). `loop()`'s
+  raw `Serial.available()` read now checks a new `isSerialOnlyCommand()`
+  before forwarding a keystroke to `handleSerialCommand()` -- anything
+  not on that 9-command list (`'Z'`/`'0'`/`'#'`/`'E'`/`'O'`/`'Q'`/`'T'`/
+  `'U'`/`'Y'`) gets a `"[SERIAL] ignored -- use the HMI TEST screen"`
+  message instead of dispatching, leaving those 28 letters/digits
+  reachable from the HMI panel only. Deliberately did NOT free the 9:
+  each has zero HMI/panel equivalent at all (`'Z'`/`'0'`/`'Y'` are bench/
+  calibration tools that never got a button; `'#'`/`'E'`/`'O'`/`'Q'`/
+  `'T'`/`'U'` are the FlagRelayTx/Send_3-7 bench-test commands from
+  V5.01.03/V5.01.07) -- blocking those too would make them permanently
+  unreachable, not just redundant, so they still answer the USB serial
+  monitor directly. `handleSerialCommand()` itself, and
+  `applyDiagButtonUpdate()`'s internal call into it, are unchanged --
+  this only gates the raw-keystroke entry point in `loop()`. Also
+  resolves the keyspace pressure that forced `'#'` into a multi-char
+  prefix back in V5.01.07, if more serial-only bench commands are ever
+  needed.
 - **V5.01.09** -- New `$B79`/lamp `$B579` HMI button, "Test Function" --
   user-added (not yet in the committed Symbol Table), same +500 lamp-offset
   pattern as the 28 diag buttons but standalone (its address doesn't fall
