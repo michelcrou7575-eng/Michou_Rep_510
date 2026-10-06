@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.09
+// Ref: TGIS-510_cpp_V5.01.10
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -3217,12 +3217,14 @@ bool addrToDiagIndex(uint16_t addr, uint8_t &indexOut)
 }
 
 // Forward declaration: handleSerialCommand() is defined further down this
-// file (it also handles literal keystrokes from the USB serial monitor),
-// but applyDiagButtonUpdate() -- called from serviceHmiButtonPolling(),
+// file, but applyDiagButtonUpdate() -- called from serviceHmiButtonPolling(),
 // which comes first -- needs to call it now that HMI buttons can fire the
 // exact same commands. Reusing it directly means every one of the 28
 // diagnostic actions has exactly one implementation, not two copies to
-// keep in sync.
+// keep in sync. Since V5.01.10, loop()'s raw USB-serial read path only
+// forwards the 9 commands with no HMI equivalent (see
+// isSerialOnlyCommand()) -- these 28 are reachable from the HMI panel
+// only now, not from a PC keyboard.
 void handleSerialCommand(char c);
 
 void applyDiagButtonUpdate(uint8_t i, bool pressed)
@@ -3504,6 +3506,33 @@ enum class FlagTestState
 };
 FlagTestState flagTestState = FlagTestState::Idle;
 uint8_t flagTestIndex = 0;
+
+// The only commands with no HMI panel equivalent -- everything else in
+// the switch below (the 28 diag-button chars) is now HMI-only, freed off
+// the PC keyboard per the user's explicit request (see loop()'s
+// Serial.available() block). These 9 stay reachable from the USB serial
+// monitor because nothing else can reach them: 'Z'/'0'/'Y' are bench/
+// calibration tools that never got (or don't need) a panel button, and
+// '#'/'E'/'O'/'Q'/'T'/'U' are the FlagRelayTx/Send_3-7 bench-test
+// commands, which predate any HMI equivalent existing at all.
+bool isSerialOnlyCommand(char c)
+{
+  switch (c)
+  {
+  case 'Z':
+  case '0':
+  case '#':
+  case 'E':
+  case 'O':
+  case 'Q':
+  case 'T':
+  case 'U':
+  case 'Y':
+    return true;
+  default:
+    return false;
+  }
+}
 
 void handleSerialCommand(char c)
 {
@@ -4137,7 +4166,23 @@ void loop()
 
   if (Serial.available())
   {
-    handleSerialCommand((char)Serial.read());
+    char c = (char)Serial.read();
+
+    // All 28 diag-button commands are HMI-only now -- ST-BY and friends
+    // on the TEST screen already reach handleSerialCommand() through
+    // applyDiagButtonUpdate(); duplicating them on the PC keyboard just
+    // ate keyspace (exactly what forced '#' to become a multi-char
+    // prefix in V5.01.07). A '#'-sequence already in progress always
+    // passes through regardless -- that whole protocol is serial-only,
+    // no HMI equivalent to free it from.
+    if (flagTestState != FlagTestState::Idle || isSerialOnlyCommand(c))
+    {
+      handleSerialCommand(c);
+    }
+    else if (c > 0x20 && c < 0x7F)
+    {
+      Serial.printf("[SERIAL] '%c' ignored -- use the HMI TEST screen for this now\n", c);
+    }
   }
 
   if (state != lastLoggedState)
