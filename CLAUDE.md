@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_08.cpp`, i.e. V5.01.08 -- see "V5.00.00" below for how we
+`tgis510_v5_01_09.cpp`, i.e. V5.01.09 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -45,6 +45,33 @@ standing rules and recent context carry over across sessions.
   genuinely blocked on a decision only the user can make (e.g. a
   functional spec, a hardware wiring choice, an explicit rule override).
 
+- **V5.01.09** -- New `$B79`/lamp `$B579` HMI button, "Test Function" --
+  user-added (not yet in the committed Symbol Table), same +500 lamp-offset
+  pattern as the 28 diag buttons but standalone (its address doesn't fall
+  in `kDiagButtonNames[28]`'s contiguous block), same precedent as
+  `BUTTON_ACK_ADDR`/`BUTTON_FAIL_ADDR`. From the user's own request: since
+  the HMI TEST screen already has a numbered IO block (buttons 1-10,
+  serial `'1'`-`'A'`), no need for separate `FlagRelayTx` bench-test
+  buttons -- just give that block a second mode. New persistent
+  `testFunctionMode` flag, flipped by `applyTestFuncButtonUpdate()` (gated
+  behind the TEST screen's own Enable toggle, same reasoning as the 28
+  diag buttons) and mirrored to the `$B579` lamp (latched, not
+  auto-reset -- it's a mode, not a one-shot). The old separate `case '1'`-
+  `'7'`/`'8'`/`'9'`/`'A'` blocks in `handleSerialCommand()` are now one
+  combined block branching on `testFunctionMode`: OFF (default) is
+  unchanged (IO1-7 MCP LED test + OPTO_1/2/3 raw TO_PLC_COMM bit test); ON
+  repurposes `'1'`-`'8'` as COMMS Test 1-8 (`flagRelayTx.setFlag()` for
+  flags 0-7 -- an exact fit, resolving V5.01.07's "flag index 7 has no
+  free button" gap), `'9'`/`'A'` spare. Supersedes the earlier "do both
+  actions on the same button" idea floated for this problem -- once the
+  user pushed back on "you lose the LED-wiring check" as a false
+  dichotomy (correctly: `toggleMcpOutput()` and `flagRelayTx.setFlag()`
+  touch disjoint state, so nothing stopped both firing from one press),
+  the user's own follow-up request replaced that with this cleaner
+  mode-switch design instead, which also fixes the button-count mismatch
+  that the "both at once" idea left open. `printDiagnostics()` ('D') now
+  also prints the current Test Function mode and what buttons 1-A do in
+  it.
 - **V5.01.08** -- Fixed `PlcComms::setStatus()`/`toggleTestBit()` driving
   `OPTO_1` (and `OPTO_2`, same 24V/220ohm MCP-driven circuit, same code
   pattern -- fixed together as one root cause, though the user's own

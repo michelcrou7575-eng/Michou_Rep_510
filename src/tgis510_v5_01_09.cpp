@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.08
+// Ref: TGIS-510_cpp_V5.01.09
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -867,6 +867,17 @@ namespace NS12
   // bad-tube flag (tubeIsBad/$B2), not FaultStop or the screen Enable
   // toggles. No dedicated lamp in the Symbol Table (unlike Acknowledge).
   constexpr uint16_t BUTTON_FAIL_ADDR = 38;
+
+  // TEST_FUNCTION ($B79/lamp $B579, user-added, same +500 lamp-offset
+  // pattern as the 28 diag buttons) -- standalone mode toggle for the
+  // panel's numbered IO block (buttons 1-10, serial '1'-'A'). OFF (default):
+  // today's behavior, IO1-7 MCP LED test + OPTO_1/2/3 raw TO_PLC_COMM bit
+  // test. ON: buttons 1-8 become COMMS Test 1-8 (FlagRelayTx flags 0-7),
+  // 9/A spare. Not part of the kDiagButtonNames[28]/DIAG_BUTTON_BASE_ADDR
+  // array (its address doesn't fall in that contiguous block) -- standalone
+  // like BUTTON_ACK_ADDR/BUTTON_FAIL_ADDR above, same reasoning.
+  constexpr uint16_t BUTTON_TESTFUNC_ADDR = 79;
+  constexpr uint16_t LAMP_TESTFUNC_ADDR = 579;
 
   // Header status bits, confirmed from the Symbol Table -- outputs the ESP
   // writes, not inputs. $B2 "this Tube is BAD" mirrors FROM_PLC_COMM bit 2
@@ -2281,6 +2292,15 @@ constexpr uint32_t ACK_LAMP_AUTO_RESET_MS = 1000;
 bool failButtonState = false;
 uint32_t lastFailPollMs = 0;
 
+// TEST_FUNCTION ($B79/$B579) -- standalone, independently-polled momentary
+// button whose press latches a persistent mode (testFunctionMode, declared
+// near flagRelayTx below), not a one-shot action -- its lamp mirrors that
+// mode and stays latched, same reasoning as the numbered IO block's own
+// lamps (kDiagLampAutoReset=false entries), not the auto-reset ones.
+bool testFuncButtonState = false;
+uint32_t lastTestFuncPollMs = 0;
+bool testFuncLampState = false;
+
 constexpr char kDiagCommandChars[NS12::DIAG_BUTTON_COUNT] = {
     'S', 'W', 'I', 'G', 'F', '1', '2', '3', '4', '5', '6', '7', '8', '9',
     'A', 'K', 'P', 'M', 'C', 'B', 'X', 'R', 'D', 'H', 'V', 'J', 'N', 'L'};
@@ -2720,6 +2740,13 @@ struct FlagRelayRx
 // is the next step once the pin question is settled.
 FlagRelayTx flagRelayTx;
 
+// Test Function mode (see NS12::BUTTON_TESTFUNC_ADDR) -- OFF: serial/HMI
+// '1'-'A' run the numbered IO block as before (IO1-7 MCP LED test +
+// OPTO_1/2/3 raw TO_PLC_COMM bit test). ON: '1'-'8' instead call
+// flagRelayTx.setFlag() for COMMS Test flags 0-7, '9'/'A' spare -- see the
+// combined case block in handleSerialCommand().
+bool testFunctionMode = false;
+
 namespace PlcComms
 {
   enum class PlcStatus : uint8_t
@@ -2990,6 +3017,8 @@ void printDiagnostics()
   Serial.printf("PLC_CONTROL ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad : %d / %d / %d\n", plcAcknowledge,
                 plcMachineRunning, tubeIsBad);
   Serial.printf("Digital Comms Test Mode : %s\n", digitalCommsTestMode ? "ON" : "off");
+  Serial.printf("Test Function ($B79)    : %s (buttons 1-A = %s)\n", testFunctionMode ? "ON" : "off",
+                testFunctionMode ? "COMMS Test 1-8, 9/A spare" : "IO1-7 LED test + OPTO_1-3");
   Serial.print(F("Send_0-7    (PLC DB56 Send_0-7)    : "));
 
   for (uint8_t i = 0; i < 8; i++)
@@ -3148,6 +3177,33 @@ void applyFailButtonUpdate(bool pressed)
   }
 }
 
+// TEST_FUNCTION ($B79/lamp $B579) -- flips testFunctionMode, which
+// repurposes the numbered IO block (see the combined '1'-'A' case in
+// handleSerialCommand()). Gated behind the TEST screen's own Enable
+// toggle, same reasoning as applyDiagButtonUpdate() below -- it only
+// makes sense to flip this while that screen is actually armed.
+void applyTestFuncButtonUpdate(bool pressed)
+{
+  bool wasPressed = testFuncButtonState;
+  testFuncButtonState = pressed;
+
+  if (pressed && !wasPressed)
+  {
+    if (!buttonEnableState[BUTTON_TEST_INDEX])
+    {
+      Serial.println(F("[HMI-DIAG] TEST_FUNCTION ($B79) ignored -- TEST screen not enabled"));
+      return;
+    }
+
+    testFunctionMode = !testFunctionMode;
+    Serial.printf("[HMI-DIAG] TEST_FUNCTION -> %s (buttons 1-A now %s)\n",
+                  testFunctionMode ? "ON" : "OFF",
+                  testFunctionMode ? "COMMS Test 1-8, 9/A spare" : "IO1-7 LED test + OPTO_1-3");
+    testFuncLampState = testFunctionMode;
+    ns12.sendWB(NS12::LAMP_TESTFUNC_ADDR, &testFuncLampState, 1);
+  }
+}
+
 bool addrToDiagIndex(uint16_t addr, uint8_t &indexOut)
 {
   if (addr < NS12::DIAG_BUTTON_BASE_ADDR)
@@ -3228,6 +3284,12 @@ void serviceHmiButtonPolling()
       matched = true;
     }
 
+    if (!matched && notifyAddr == NS12::BUTTON_TESTFUNC_ADDR)
+    {
+      applyTestFuncButtonUpdate(notifyPressed);
+      matched = true;
+    }
+
     if (!matched)
     {
       uint8_t diagIndex;
@@ -3273,6 +3335,13 @@ void serviceHmiButtonPolling()
   }
 
   if (!noOffsetTestPending && !ns12.isReadPending() &&
+      now - lastTestFuncPollMs >= NS12::BUTTON_POLL_INTERVAL_MS)
+  {
+    lastTestFuncPollMs = now;
+    ns12.requestRB(NS12::BUTTON_TESTFUNC_ADDR, 1);
+  }
+
+  if (!noOffsetTestPending && !ns12.isReadPending() &&
       now - lastDiagButtonPollMs >= NS12::DIAG_BUTTON_POLL_INTERVAL_MS)
   {
     lastDiagButtonPollMs = now;
@@ -3312,6 +3381,12 @@ void serviceHmiButtonPolling()
     if (!matched && addr == NS12::BUTTON_FAIL_ADDR)
     {
       applyFailButtonUpdate(pressed);
+      matched = true;
+    }
+
+    if (!matched && addr == NS12::BUTTON_TESTFUNC_ADDR)
+    {
+      applyTestFuncButtonUpdate(pressed);
       matched = true;
     }
 
@@ -3491,35 +3566,58 @@ void handleSerialCommand(char c)
   case 'F':
     enterFaultStop();
     break; // $B54 / lamp $B554 -- force state
+  // $B55-$B64 / lamp $B555-$B564 -- the numbered IO block (buttons 1-10).
+  // Double duty, selected by testFunctionMode (see NS12::BUTTON_TESTFUNC_ADDR):
+  // OFF (default) = IO1-7 MCP LED test ('1'-'7') + OPTO_1/2/3 raw
+  // TO_PLC_COMM bit test ('8'/'9'/'A'), unchanged from before V5.01.09.
+  // ON = COMMS Test 1-8 ('1'-'8', FlagRelayTx flags 0-7), '9'/'A' spare.
   case '1':
   case '2':
   case '3':
   case '4':
-  case '5': // $B55-$B59 / lamp $B555-$B559
+  case '5':
   case '6':
-  case '7': // $B60-$B61 / lamp $B560-$B561
-  {
-    uint8_t idx = c - '1'; // IO1-IO7 -- MCP-driven LED test outputs
-
-    if (mcpOk)
-    {
-      toggleMcpOutput(idx);
-      Serial.printf("[IO-TEST] MCP output #%c (pin %u) -> %s\n", c, kMcpOutputPins[idx],
-                    mcpOutputState[idx] ? "HIGH" : "LOW");
-    }
-    break;
-  }
-  case '8': // $B62 / lamp $B562 -- TO_PLC_COMM bit 0 / OPTO_1
-  case '9': // $B63 / lamp $B563 -- TO_PLC_COMM bit 1 / OPTO_2
-  {
-    uint8_t bit = c - '8';
-    PlcComms::toggleTestBit(bit);
-    Serial.printf("[PLC-TEST] OPTO_%u -> %s\n", bit + 1,
-                  PlcComms::testOutputState[bit] ? "HIGH" : "LOW");
-    break;
-  }
+  case '7':
+  case '8':
+  case '9':
   case 'A':
-  { // $B64 / lamp $B564 -- TO_PLC_COMM bit 2 / OPTO_3
+  {
+    uint8_t idx = c - '1'; // 0-9 for '1'..'A'
+
+    if (testFunctionMode)
+    {
+      if (idx >= 8) // '9'/'A' -- spare, kept clear of the 8 COMMS flags
+      {
+        Serial.printf("[COMMS-TEST] #%c spare -- no action\n", c);
+        break;
+      }
+      bool value = !flagRelayTx.desired[idx];
+      flagRelayTx.setFlag(idx, value);
+      Serial.printf("[COMMS-TEST] Flag #%u -> %s\n", idx, value ? "SET" : "CLEAR");
+      break;
+    }
+
+    if (idx < 7) // '1'-'7' -- IO1-IO7, MCP-driven LED test outputs
+    {
+      if (mcpOk)
+      {
+        toggleMcpOutput(idx);
+        Serial.printf("[IO-TEST] MCP output #%c (pin %u) -> %s\n", c, kMcpOutputPins[idx],
+                      mcpOutputState[idx] ? "HIGH" : "LOW");
+      }
+      break;
+    }
+
+    if (idx < 9) // '8'/'9' -- TO_PLC_COMM bit 0/1, OPTO_1/OPTO_2
+    {
+      uint8_t bit = idx - 7;
+      PlcComms::toggleTestBit(bit);
+      Serial.printf("[PLC-TEST] OPTO_%u -> %s\n", bit + 1,
+                    PlcComms::testOutputState[bit] ? "HIGH" : "LOW");
+      break;
+    }
+
+    // 'A' -- TO_PLC_COMM bit 2, OPTO_3
     PlcComms::toggleTestBit(2);
     Serial.printf("[PLC-TEST] OPTO_3 -> %s\n",
                   PlcComms::testOutputState[2] ? "HIGH" : "LOW");
