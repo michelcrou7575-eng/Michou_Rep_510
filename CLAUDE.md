@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_06.cpp`, i.e. V5.01.06 -- see "V5.00.00" below for how we
+`tgis510_v5_01_07.cpp`, i.e. V5.01.07 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -45,8 +45,36 @@ standing rules and recent context carry over across sessions.
   genuinely blocked on a decision only the user can make (e.g. a
   functional spec, a hardware wiring choice, an explicit rule override).
 
-## Recent changes and why (most recent first)
-
+- **V5.01.07** -- `'#'` serial command: a minimal bench-test parser for
+  `FlagRelayTx::setFlag()`, from a real bug the user hit trying to bench
+  test V5.01.06 -- they typed `"setFlag(3, true)"` straight into the
+  serial terminal, expecting it to invoke the new API, and instead got
+  `[IO-TEST] MCP output #3 (pin 10) -> HIGH`: the `'3'` in that string
+  hit the *existing* `case '3'` (IO3 toggle), because
+  `handleSerialCommand()` dispatches one character at a time with no
+  function-call parser at all. Real, demonstrated risk, not
+  hypothetical: typing free text into the serial terminal right now
+  silently triggers whatever existing single-char command matches each
+  character in it.
+  Fix: `'#'` + index digit (0-7) + value digit (0/1), e.g. `"#31"` =
+  `setFlag(3, true)`, spanning multiple `handleSerialCommand()` calls
+  (one per keystroke) via a small persistent state machine
+  (`FlagTestState`), non-blocking. `'#'` as the prefix resolves the
+  "every A-Z/0-9 slot is taken" problem flagged in V5.01.06's own
+  bench-test-procedure discussion: confirmed safe by reading the switch's
+  `default: break;` -- it silently ignores anything without a case, and
+  nothing in the switch matches a non-alphanumeric character, so a
+  symbol prefix has zero collision risk against the other 36 commands,
+  no need to sacrifice an existing letter.
+  New global `FlagRelayTx flagRelayTx;` instance -- but deliberately
+  *not* calling `.service()` from `loop()` yet, since that needs real
+  GPIO numbers to actually transmit and the 3rd free pin needed for the
+  bench loopback test (only `GPIO10`/`GPIO11` are verified free from
+  this file's own `Pins` comments) still isn't confirmed. `'#NV'` lets
+  `setFlag()`/the pending-queue logic (`desired[]`/`committed[]`/
+  `pending[]`) be exercised and observed right now regardless, printed
+  back immediately on each command -- unblocks bench testing the queuing
+  layer without needing the pin question settled first.
 - **V5.01.06** -- New `FlagRelayTx`/`FlagRelayRx` structs -- a genuinely
   different protocol from `Gray3`, not an extension of it, for a
   genuinely different requirement the user clarified: 8 independent
