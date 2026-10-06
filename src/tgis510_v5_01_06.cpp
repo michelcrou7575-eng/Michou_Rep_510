@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.05
+// Ref: TGIS-510_cpp_V5.01.06
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2566,6 +2566,148 @@ struct Gray3Transceiver
   bool settled() const
   {
     return millis() - lastChangeMs >= SETTLE_MS;
+  }
+};
+
+// =====================================================================
+// FlagRelayTx/FlagRelayRx -- NOT Gray3/Gray3Transceiver. Different
+// requirement: 8 genuinely independent flags, any subset toggleable at
+// any time, each side's array mirrored bit-for-bit on the other --
+// Gray3 only guarantees single-bit-safe transitions for one-hot values
+// stepping through its ring in order (proven by the cube-graph argument:
+// each of the 8 states has only 3 single-bit-away neighbors, not 7), so
+// it can't safely carry arbitrary-order independent flag toggles.
+//
+// Protocol: every flag change sends one 2-frame event over the same 3
+// wires. Wire 2 is a parity bit that flips on every frame (both halves
+// of every event) -- it's the self-strobe, same principle as Gray3, just
+// extended across 2 frames instead of 1. Frame A carries index[1:0] on
+// wires 0-1; Frame B carries index[2] on wire 0 and the flag's new VALUE
+// on wire 1 (an authoritative SET, not a blind toggle -- self-healing if
+// a previous event for the same index was ever lost, since the next
+// real change to that flag re-asserts its correct value regardless).
+// Framing is by strict protocol alternation (A always precedes its B),
+// not self-describing tag bits, so the receiver just needs to know which
+// one it's expecting next; on cold start it syncs to whatever frame it
+// sees first as "A", same precedent as FB100's "accept the first sample
+// outright, no fault possible yet".
+//
+// Portable like Gray3/Gray3Transceiver: pin numbers are call parameters,
+// not hardcoded. Caller-owned (not a namespace singleton) so independent
+// links don't share state.
+
+struct FlagRelayTx
+{
+  static constexpr uint32_t SETTLE_MS = 5;
+
+  bool desired[8] = {};   // caller's target state, set via setFlag()
+  bool committed[8] = {}; // last value this side has fully transmitted
+  bool pending[8] = {};   // true if desired[i] may still differ from committed[i]
+
+  enum class Phase
+  {
+    Idle,
+    SendingA,
+    SendingB
+  } phase = Phase::Idle;
+
+  uint8_t activeIndex = 0;
+  bool parityBit = false;
+  uint32_t lastChangeMs = 0;
+
+  void setFlag(uint8_t index, bool value)
+  {
+    desired[index] = value;
+    if (value != committed[index])
+      pending[index] = true;
+  }
+
+  // Call every loop() iteration (non-blocking). pin0/pin1/pin2 are the
+  // 3 physical outputs -- which ones is still unassigned, by design.
+  void service(uint8_t pin0, uint8_t pin1, uint8_t pin2)
+  {
+    switch (phase)
+    {
+    case Phase::Idle:
+      for (uint8_t i = 0; i < 8; i++)
+      {
+        if (pending[i])
+        {
+          activeIndex = i;
+          pending[i] = false; // setFlag() re-arms this if desired[] moves again before commit
+          phase = Phase::SendingA;
+          digitalWrite(pin0, (activeIndex >> 0) & 1);
+          digitalWrite(pin1, (activeIndex >> 1) & 1);
+          parityBit = !parityBit;
+          digitalWrite(pin2, parityBit);
+          lastChangeMs = millis();
+          return;
+        }
+      }
+      break;
+
+    case Phase::SendingA:
+      if (millis() - lastChangeMs >= SETTLE_MS)
+      {
+        phase = Phase::SendingB;
+        digitalWrite(pin0, (activeIndex >> 2) & 1);
+        digitalWrite(pin1, desired[activeIndex]); // read fresh here, not a stale snapshot from Frame A
+        parityBit = !parityBit;
+        digitalWrite(pin2, parityBit);
+        lastChangeMs = millis();
+      }
+      break;
+
+    case Phase::SendingB:
+      if (millis() - lastChangeMs >= SETTLE_MS)
+      {
+        committed[activeIndex] = desired[activeIndex];
+        pending[activeIndex] = (desired[activeIndex] != committed[activeIndex]); // catches a setFlag() that landed during Frame B's settle window
+        phase = Phase::Idle;
+      }
+      break;
+    }
+  }
+};
+
+struct FlagRelayRx
+{
+  bool flags[8] = {}; // current known state of the remote's 8 flags
+
+  bool initialized = false;
+  bool lastParity = false;
+  bool expectingFrameB = false;
+  uint8_t pendingIndexLow = 0;
+
+  // Call every loop() iteration (non-blocking). pin0/pin1/pin2 are the
+  // 3 physical inputs this reads -- which ones is still unassigned.
+  void service(bool pin0, bool pin1, bool pin2)
+  {
+    bool parity = pin2;
+
+    if (!initialized)
+    {
+      lastParity = parity;
+      initialized = true; // next parity transition is treated as Frame A -- same
+      return;              // "accept the first sample outright" precedent as FB100
+    }
+
+    if (parity == lastParity)
+      return; // no new frame since last poll
+
+    lastParity = parity;
+
+    if (!expectingFrameB)
+    {
+      pendingIndexLow = (pin0 ? 1 : 0) | (pin1 ? 2 : 0);
+      expectingFrameB = true;
+    }
+    else
+    {
+      uint8_t index = pendingIndexLow | (pin0 ? 4 : 0);
+      flags[index] = pin1;
+      expectingFrameB = false;
+    }
   }
 };
 
