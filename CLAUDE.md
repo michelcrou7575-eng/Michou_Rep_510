@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_05.cpp`, i.e. V5.01.05 -- see "V5.00.00" below for how we
+`tgis510_v5_01_06.cpp`, i.e. V5.01.06 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -47,6 +47,45 @@ standing rules and recent context carry over across sessions.
 
 ## Recent changes and why (most recent first)
 
+- **V5.01.06** -- New `FlagRelayTx`/`FlagRelayRx` structs -- a genuinely
+  different protocol from `Gray3`, not an extension of it, for a
+  genuinely different requirement the user clarified: 8 independent
+  flags, any subset toggleable at any time, each side's array mirrored
+  bit-for-bit on the other (not "exactly one active state out of 8",
+  which is what `Gray3` actually solves). Worked through why `Gray3`
+  can't safely carry this before building anything: a 3-bit Gray cube has
+  degree 3 -- each of its 8 states has only 3 single-bit-away neighbors,
+  not 7 -- so the single-bit-transition guarantee only holds for values
+  stepping through the ring in its own fixed order (true for `PlcStatus`,
+  verified against its real transition paths in V5.01.02), not for
+  flags that can change in arbitrary order. Confirmed with the user
+  (asked "what system is best", given two real options with their
+  tradeoffs: reserve 1 of 8 codes as an IDLE marker for a simpler
+  single-frame scheme at the cost of only 7 usable flags, or a 2-frame
+  scheme keeping all 8) -- picked the 2-frame option ("Option 2") since
+  the user explicitly wanted all 8, not 7.
+  Protocol: every flag change is one 2-frame event. Wire 2 is a parity
+  bit flipping on every frame (both halves of every event) -- the
+  self-strobe, same principle as `Gray3`, extended across 2 frames.
+  Frame A carries `index[1:0]` on wires 0-1; Frame B carries `index[2]`
+  on wire 0 and the flag's new VALUE on wire 1 -- an authoritative SET,
+  not a blind toggle, chosen specifically so a lost event for one index
+  self-heals the next time that same flag genuinely changes, rather than
+  leaving the two sides permanently desynced with no way to tell which
+  bit is wrong (flagged as a real risk of a naive toggle-only version
+  before deciding against it). Framing is by strict A-then-B protocol
+  alternation, not a self-describing tag bit (there wasn't a spare bit
+  for one without sacrificing the value bit) -- cold start syncs to
+  whatever frame arrives first as "A", same precedent as FB100's "accept
+  the first sample outright, no fault possible yet" from the Gray-decode
+  PLC-side work.
+  Separate from `Gray3Transceiver` (not built on top of it) since the
+  framing is fundamentally different; same non-blocking,
+  `millis()`-based, caller-owned-struct, portable/pin-agnostic style.
+  Still not wired to real pins or to `PlcComms`/`FROM_PLC_COMM` -- same
+  as `Gray3`, that attribution is still the user's own call once this is
+  bench-tested. PLC-side STL equivalent described in chat, not committed
+  to this repo (separate S7 program, same as `FC56`/`FB100`).
 - **V5.01.05** -- New `Gray3Transceiver` struct: the hardware-facing
   settling-delay wrapper around `Gray3::encode()` from a follow-up
   question about the user's own "2-frame transceiver"/`PIN_TX_D0`/
