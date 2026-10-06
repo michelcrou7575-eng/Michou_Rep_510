@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_07.cpp`, i.e. V5.01.07 -- see "V5.00.00" below for how we
+`tgis510_v5_01_08.cpp`, i.e. V5.01.08 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -45,6 +45,14 @@ standing rules and recent context carry over across sessions.
   genuinely blocked on a decision only the user can make (e.g. a
   functional spec, a hardware wiring choice, an explicit rule override).
 
+- **V5.01.08** -- Fixed `PlcComms::setStatus()`/`toggleTestBit()` driving
+  `OPTO_1` (and `OPTO_2`, same 24V/220ohm MCP-driven circuit, same code
+  pattern -- fixed together as one root cause, though the user's own
+  report named only `OPTO_1`) inverted (`!testOutputState[...]`) while
+  `ESP_OPTO_3` was not -- confirmed a real bug per the user's report,
+  following up on V5.01.07-era's "why does OPTO_1 turn on after reset"
+  question that first surfaced the inconsistency. Both now write
+  `testOutputState[...]` directly, matching `ESP_OPTO_3`'s polarity.
 - **V5.01.07** -- `'#'` serial command: a minimal bench-test parser for
   `FlagRelayTx::setFlag()`, from a real bug the user hit trying to bench
   test V5.01.06 -- they typed `"setFlag(3, true)"` straight into the

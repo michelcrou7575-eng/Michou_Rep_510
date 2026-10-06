@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.07
+// Ref: TGIS-510_cpp_V5.01.08
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2753,8 +2753,8 @@ namespace PlcComms
 
     if (!mcpOk)
       return;
-    mcp.digitalWrite(McpPin::OPTO_1, !testOutputState[0]);
-    mcp.digitalWrite(McpPin::OPTO_2, !testOutputState[1]);
+    mcp.digitalWrite(McpPin::OPTO_1, testOutputState[0]);
+    mcp.digitalWrite(McpPin::OPTO_2, testOutputState[1]);
   }
 
   void toggleTestBit(uint8_t bit)
@@ -2766,12 +2766,12 @@ namespace PlcComms
     if (bit == 0)
     {
       if (mcpOk)
-        mcp.digitalWrite(McpPin::OPTO_1, !testOutputState[bit]);
+        mcp.digitalWrite(McpPin::OPTO_1, testOutputState[bit]);
     }
     else if (bit == 1)
     {
       if (mcpOk)
-        mcp.digitalWrite(McpPin::OPTO_2, !testOutputState[bit]);
+        mcp.digitalWrite(McpPin::OPTO_2, testOutputState[bit]);
     }
     else if (bit == 2)
     {
