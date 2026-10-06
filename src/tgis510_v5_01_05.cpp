@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.04
+// Ref: TGIS-510_cpp_V5.01.05
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2532,6 +2532,42 @@ namespace Gray3
     }
   }
 } // namespace Gray3
+
+// Hardware-facing transceiver wrapper around Gray3::encode(). Gray3
+// itself stays pure/pin-free so it's portable and independently
+// testable; this is the separate layer that actually drives pins and
+// enforces a settling delay before a freshly-written pattern is safe to
+// treat as transmitted -- keeps the lines from being sampled by the
+// receiver mid-transition. Non-blocking (millis()-based, same idiom as
+// serviceKeyenceTriggerTest()) rather than delay(), to match this file's
+// standing non-blocking design elsewhere (tube inspection can't afford
+// to stall). Caller-owned (not a namespace singleton) so more than one
+// independent Gray3 link can run at once without sharing state.
+// Pin numbers are constructor/call parameters, not hardcoded -- which
+// physical pins this drives is still unassigned, by design.
+struct Gray3Transceiver
+{
+  static constexpr uint32_t SETTLE_MS = 5;
+  uint32_t lastChangeMs = 0;
+  bool pattern[3] = {};
+
+  // Call once per state change (not every loop() iteration) -- writes
+  // the newly-encoded pattern to the 3 given pins and starts the settle
+  // timer. Poll settled() afterward before relying on the lines as valid.
+  void beginTransmit(const bool in[8], uint8_t pin0, uint8_t pin1, uint8_t pin2)
+  {
+    Gray3::encode(in, pattern);
+    digitalWrite(pin0, pattern[0]);
+    digitalWrite(pin1, pattern[1]);
+    digitalWrite(pin2, pattern[2]);
+    lastChangeMs = millis();
+  }
+
+  bool settled() const
+  {
+    return millis() - lastChangeMs >= SETTLE_MS;
+  }
+};
 
 namespace PlcComms
 {
