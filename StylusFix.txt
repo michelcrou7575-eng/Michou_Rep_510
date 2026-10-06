@@ -1,3 +1,261 @@
+SHOP:
+
+/* ==========================================
+       1. MAIN INTERFACE & BACKGROUNDS
+       ========================================== */
+    
+    /* Controls the deep, dark brown main background of the entire window, 
+       the central chat workspace, and any major content panels. */
+    body, html, main, #root, [role="main"],
+    .bg-bg-000, .bg-bg-100, .bg-bg-200, div[class*="bg-bg-"], 
+    div[class*="bg-surface-"], [data-page-context] { 
+        background-color: #31251e !important; /* Deep Dark Brown */
+        color: #c4bc2f !important;            /* Primary Greenish-Yellow Text Tint */
+    } 
+
+    /* Controls the dark teal background of the left navigation sidebar panel, 
+       artifact drawers, and side menus. */
+    .bg-bg-300, nav, aside, [class*="bg-sidebar"], [role="navigation"], 
+    div[class*="Sidebar"], div[class*="Navigation"] { 
+        background-color: #1e3f40 !important; /* Deep Teal-Blue */
+    } 
+
+
+    /* ==========================================
+       2. TYPOGRAPHY & GENERAL TEXT
+       ========================================== */
+    
+    /* Controls the muted, off-white color for standard conversational text, 
+       paragraphs, headers, list items, and bold inline text labels. */
+    p, span, h1, h2, h3, h4, h5, h6, li, strong, time,
+    .text-text-100, .text-text-200, .text-text-300, .text-muted-foreground { 
+        color: #bfbfbc !important; /* Muted Off-White / Light Gray */
+    } 
+
+
+    /* ==========================================
+       3. SYSTEM BANNERS, WARNINGS & LIMIT NOTIFICATIONS
+       ========================================== */
+    
+    /* Controls the rust-orange text color used for secondary system headings, 
+       sub-titles, usage limits, and smaller structural labels. */
+    div[class*="text-text-500"], div[class*="text-text-400"], 
+    div[class*="text-amber-"], .text-sm.text-muted-foreground, 
+    [class*="text-secondary"], span:title { 
+        color: #c16f26 !important; /* Rust Orange */
+    } 
+
+    /* Controls the styling of orange alert notifications, resource limit bars, 
+       and warning containers that appear at the top or bottom of the app. */
+    div[class*="border-warning"], div[class*="bg-warning"], 
+    div[role="alert"], .bg-accent\/10, [class*="Banner"], [class*="Alert"] { 
+        background-color: #3e2513 !important; /* Burnt Orange Background */
+        border: 1px solid #52c47a !important; /* Accent Green Border */
+        color: #933975 !important;            /* Muted Violet/Purple Text */
+    } 
+
+    /* Controls the appearance of explicit "Upgrade" links or primary action 
+       buttons trapped inside system alert banners. */
+    div[role="alert"] a, div[role="alert"] button, [class*="upgrade-link"] { 
+        color: #b2ca3d !important; /* Bright Chartreuse Yellow */
+        font-weight: bold !important; 
+    } 
+
+
+    /* ==========================================
+       4. GLOBAL GREEN ACCENTS & ACTIVE NAVIGATION
+       ========================================== */
+    
+    /* Controls hyperlinks, text-accent keywords, and interactive standalone action links. */
+    a, .text-accent, .text-hyperlink, button[class*="text-bg-"], 
+    .font-semibold.text-text-100, [class*="text-emerald-"], [class*="text-green-"] { 
+        color: #52c47a !important; /* Vivid Accent Green */
+    } 
+
+    /* Controls the active selection indicator block behind the current page or chat 
+       name item in the sidebar list. */
+    [aria-current="page"], .bg-accent-main, [class*="active-nav"] { 
+        background-color: #86573d !important; /* Medium Brown Accent Block */
+        color: #52c47a !important;            /* Vivid Accent Green Text */
+    } 
+
+    /* Controls the accessibility focus outline ring when navigating elements via keyboard. */
+    *:focus-visible { 
+        outline: 2px solid #a69015c7 !important; /* Dull Yellow-Gold Halo */
+    } 
+
+
+    /* ==========================================
+       5. CHAT MESSAGES & BUBBLES
+       ========================================== */
+    
+    /* Controls YOUR message container (The dark blue bubble on the right side of the screen). */
+    .bg-bg-400, div[data-testid="user-message"], [data-testid*="user"], 
+    div[class*="UserMessage"], [class*="bg-surface-chat-user"] { 
+        background-color: #0c232b !important; /* Dark Slate Blue */
+        border: 1px solid #28a8bd !important; /* Bright Cyan Outline */
+        border-radius: 10px !important; 
+    } 
+
+    /* --- THIS IS THE "PALER BROWN THERE" ---
+       Controls CLAUDE'S response container block. It styles the wider, lighter background area 
+       where the AI text paragraphs reside. */
+    div[data-testid="assistant-message"], [data-testid*="assistant"], 
+    div[class*="AssistantMessage"], article, [role="article"] { 
+        background-color: #31251e !important; /* Muted Paler Cocoa Brown */
+    } 
+
+    /* Controls the initial core shape wrapper of the chat engine input forms 
+       and native text area panels before context evaluation. */
+    fieldset, div[role="textarea"], div[role="textbox"], 
+    div[contenteditable="true"], textarea, div[class*="border-token-border-"] { 
+        background-color: #534136 !important; /* Warm Milk-Chocolate Brown */
+        border-color: #a0b912 !important;     /* Olive-Green Border */
+        color: #f44646 !important;            /* Striking Alert Red (Input Placeholder State) */
+    } 
+
+
+    /* ==========================================
+       6. CODE BLOCKS & SYNTAX HIGHLIGHTING
+       ========================================== */
+    
+    /* Controls the large standalone, multi-line code container panels. */
+    pre { 
+        background-color: #2b1a12 !important; /* Deep Espresso Brown */
+        border: 1px solid #2d241f !important; /* Darker Outlining Trim */
+        padding: 12px !important; 
+        display: block !important; 
+    } 
+    
+    /* Controls the actual raw code text inside the multi-line code containers. */
+    pre code { 
+        background-color: transparent !important; 
+        color: #e2deda !important; /* Light Bone White Code Text */
+        border: none !important; 
+    } 
+
+    /* Controls small, isolated single-word code snippets embedded directly into text paragraphs. */
+    p code, li code, span code { 
+        background-color: #241d19 !important; /* Very Dark Brown Pocket */
+        color: #52c47a !important;            /* Vivid Accent Green Code Text */
+        border: 1px solid #332924 !important; /* Thin Charcoal Border */
+        padding: 2px 6px !important; 
+        border-radius: 4px !important; 
+    } 
+
+    /* Syntax Highlighting: Programming language structural terms (e.g., function, return, var). */
+    .token.keyword, .token.builtin, .token.class-name, 
+    .token.function, .token.operator { 
+        color: #52c47a !important; /* Vivid Accent Green */
+        font-weight: bold !important; 
+    } 
+    
+    /* Syntax Highlighting: Static values inside code (e.g., "Strings of text", numbers, array properties). */
+    .token.string, .token.number, .token.property { 
+        color: #cfc69b !important; /* Muted Gold/Tan */
+    } 
+    
+    /* Syntax Highlighting: Explanatory code comment text lines. */
+    .token.comment { 
+        color: #6e665f !important; /* Soft Gray-Brown Slate */
+    } 
+
+
+    /* ==========================================
+       7. HOVER STATES & UTILITY INTERACTIONS
+       ========================================== */
+    
+    /* Controls the background shade change when you hover your mouse over regular sidebar list items, 
+       history links, or basic buttons. */
+    .hover\:bg-bg-200:hover, .hover\:bg-bg-300:hover, button:hover, 
+    div[class*="hover:bg-"]:hover { 
+        background-color: #735f294a !important; /* Ochre-Yellow / Light Mustard Accent */
+    } 
+
+    /* Fix: Overrides hidden full-page structural hyperlink anchors to prevent them from flashing 
+       solid boxes when moving the mouse across structural space. */
+    a.cds-reset:hover { 
+        background-color: transparent !important; 
+    } 
+
+    /* Controls standard text hyperlinks when you actively hover over them with your cursor. */
+    a:not(.cds-reset):hover { 
+        background-color: #735f29 !important; /* Ochre-Yellow Highlight Pocket */
+    } 
+
+
+    /* ==========================================
+       8. INTERFACE SCROLLBARS
+       ========================================== */
+    
+    /* Defines the width parameters for vertical and horizontal track scrolls. */
+    ::-webkit-scrollbar { 
+        width: 10px; 
+        height: 10px; 
+    } 
+    
+    /* Controls the background lane behind the moving scrollbar thumb. */
+    ::-webkit-scrollbar-track { 
+        background: #1a1512 !important; /* Charcoal Earth Brown */
+    } 
+    
+    /* Controls the moving slider handle itself. */
+    ::-webkit-scrollbar-thumb { 
+        background: #10550c !important; /* Forest Green Slider */
+        border-radius: 5px; 
+    } 
+    
+    /* Controls the slider handle color specifically when you click and drag it. */
+    ::-webkit-scrollbar-thumb:hover { 
+        background: #880b14 !important; /* Crimson Red on Active Drag */
+    } 
+
+     /* ==========================================
+       9. CONVERSATIONAL TEXT INPUT WRAPPER
+       ========================================== */
+    
+    /* Controls the outer master frame container block at the bottom of the page. 
+       This adds the single golden ring around everything. */
+    div:has(> fieldset), fieldset, .bg-bg-000:has(div[contenteditable="true"]), 
+    div[class*="bg-bg-400"]:has(div[contenteditable="true"]), 
+    form:has(textarea), div:has(> textarea),
+    div:has(> div[contenteditable="true"]), div:has(> [data-placeholder]) { 
+        background-color: #241d1a !important; /* Deepest Espresso Brown Box */
+        border: 2px solid #b17922 !important;  /* Unified Golden Trim Border */
+        border-radius: 16px !important;       /* Clean rounded container corners */
+    } 
+
+    /* Removes the redundant interior border loops to stop the nested double-ring effect. */
+    div[contenteditable="true"], div[role="textarea"], 
+    div[role="textbox"], textarea, fieldset div, form div, .border-token-border- { 
+        border: none !important;             /* Kill the extra inner borders */
+        outline: none !important;            /* Prevent secondary layout rings */
+        background: transparent !important; /* Transparent background */
+        color: #50b6bd !important;          /* Soft Light Blue Typed Text */
+    } 
+
+    /* Controls the light gray color of empty field placeholder text ("Write a message..."). */
+    div[contenteditable="true"]:empty::before, .text-text-500\/40, 
+    [data-placeholder]::placeholder, [placeholder]::placeholder { 
+        color: #7a726b !important; /* Muted Clay Gray */
+    } 
+
+    /* Controls buttons inside your prompt area bar (such as the attachment '+' paperclip). */
+    div:has(> fieldset) button, fieldset button, 
+    div[class*="text-text-300"] button, .text-text-200\/80, form button,
+    div:has(> div[contenteditable="true"]) button { 
+        color: #12c9f4fa !important; /* Neon Electric Blue Action Symbols */
+    } 
+
+    /* Controls prompt action buttons on cursor hover. */
+    div:has(> fieldset) button:hover, fieldset button:hover, form button:hover,
+    div:has(> div[contenteditable="true"]) button:hover { 
+        color: #a496df !important;            /* Pastel Lavender Symbol Shift */
+        background-color: #663317 !important; /* Earth-Red Highlight Fill */
+    }
+
+
+Home :
 /* 1. Core Layout & Backgrounds (All Pages) */
     body, 
     html, 
