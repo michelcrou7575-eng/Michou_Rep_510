@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.10
+// Ref: TGIS-510_cpp_V5.01.11
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2780,8 +2780,13 @@ namespace PlcComms
 
     if (!mcpOk)
       return;
+    // OPTO_1 and OPTO_2 are NOT the same polarity on real hardware (confirmed
+    // by the user, V5.01.11) despite being the same 24V/220ohm MCP-driven
+    // circuit type on paper -- OPTO_1 is active-high, OPTO_2 is active-low.
+    // V5.01.08 wrongly assumed "same circuit type" meant "same polarity" and
+    // stripped the inversion from both; this restores it for OPTO_2 only.
     mcp.digitalWrite(McpPin::OPTO_1, testOutputState[0]);
-    mcp.digitalWrite(McpPin::OPTO_2, testOutputState[1]);
+    mcp.digitalWrite(McpPin::OPTO_2, !testOutputState[1]);
   }
 
   void toggleTestBit(uint8_t bit)
@@ -2798,7 +2803,7 @@ namespace PlcComms
     else if (bit == 1)
     {
       if (mcpOk)
-        mcp.digitalWrite(McpPin::OPTO_2, testOutputState[bit]);
+        mcp.digitalWrite(McpPin::OPTO_2, !testOutputState[bit]);
     }
     else if (bit == 2)
     {
