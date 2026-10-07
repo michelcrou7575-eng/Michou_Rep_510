@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.01.11
+// Ref: TGIS-510_cpp_V5.01.12
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2295,8 +2295,9 @@ uint32_t lastFailPollMs = 0;
 // TEST_FUNCTION ($B79/$B579) -- standalone, independently-polled momentary
 // button whose press latches a persistent mode (testFunctionMode, declared
 // near flagRelayTx below), not a one-shot action -- its lamp mirrors that
-// mode and stays latched, same reasoning as the numbered IO block's own
-// lamps (kDiagLampAutoReset=false entries), not the auto-reset ones.
+// mode and stays latched, same reasoning as KEYENCE_TRIG/MLX_LIVE_TOGGLE's
+// lamps (the two remaining kDiagLampAutoReset=false entries), not the
+// auto-reset ones.
 bool testFuncButtonState = false;
 uint32_t lastTestFuncPollMs = 0;
 bool testFuncLampState = false;
@@ -2317,21 +2318,27 @@ bool diagButtonState[NS12::DIAG_BUTTON_COUNT] = {};
 // bank, these 28 are separate one-shot actions, not a mode selector).
 bool diagLampState[NS12::DIAG_BUTTON_COUNT] = {};
 
-// true = one-shot command -- lamp lights on press purely to confirm the
-// ESP saw it, then auto-resets ~1s later (activateDiagLamp() below).
-// false = the button addresses a real persistent output (the numbered IO
-// block's LEDs/optos, and MLX_LIVE_TOGGLE's streaming mode), so its lamp
-// toggles and stays latched to reflect that output's actual current
-// state. Same 4-per-line layout as kDiagButtonNames above for side-by-
-// side auditing.
+// true = one-shot/momentary command -- lamp lights on press purely to
+// confirm the ESP saw it, then auto-resets ~1s later (activateDiagLamp()
+// below). Covers the numbered IO block (IO1-7/OPTO_1-3, '1'-'A') too as
+// of V5.01.12, per the user's explicit request -- the real output each
+// one drives (toggleMcpOutput()/PlcComms::toggleTestBit(), or
+// flagRelayTx.setFlag() while Test Function is ON) still toggles and
+// holds exactly as before; only the lamp's confirmation is momentary now.
+// false = the button's lamp instead toggles and stays latched, mirroring
+// a real persistent mode directly: KEYENCE_TRIG's periodic bench-test
+// pulse (V5.01.01, $B65/$B565) and MLX_LIVE_TOGGLE's streaming mode
+// ($B77/$B577) are the only two left, kept toggled per the user's
+// explicit request. Same 4-per-line layout as kDiagButtonNames above for
+// side-by-side auditing.
 constexpr bool kDiagLampAutoReset[NS12::DIAG_BUTTON_COUNT] = {
-    true, true, true, true,     // STANDBY, WAIT_TUBE, INSPECTING, TUBE_GAP
-    true, false, false, false,  // FAULT_STOP, IO1, IO2, IO3
-    false, false, false, false, // IO4, IO5, IO6, IO7
-    false, false, false, false, // IO8, IO9, YEL_LED_TEST, KEYENCE_TRIG
-    true, true, true, true,     // PLC_STATUS, TEST_PATTERN, CAPTURE_REARM, BASELINE_CAPTURE
-    true, true, true, true,     // FRAME_DUMP, REARM_BLANK, DIAGNOSTICS, BURST_PROBE
-    true, true, true, false};   // WORD_VERIFY, WB_RB_SELFTEST, NO_OFFSET_TEST, MLX_LIVE_TOGGLE
+    true, true, true, true,  // STANDBY, WAIT_TUBE, INSPECTING, TUBE_GAP
+    true, true, true, true,  // FAULT_STOP, IO1, IO2, IO3
+    true, true, true, true,  // IO4, IO5, IO6, IO7
+    true, true, true, false, // OPTO_1, OPTO_2, OPTO_3, KEYENCE_TRIG
+    true, true, true, true,  // PLC_STATUS, TEST_PATTERN, CAPTURE_REARM, BASELINE_CAPTURE
+    true, true, true, true,  // FRAME_DUMP, REARM_BLANK, DIAGNOSTICS, BURST_PROBE
+    true, true, true, false}; // WORD_VERIFY, WB_RB_SELFTEST, NO_OFFSET_TEST, MLX_LIVE_TOGGLE
 constexpr uint32_t DIAG_LAMP_AUTO_RESET_MS = 1000;
 uint32_t diagLampAutoOffAtMs[NS12::DIAG_BUTTON_COUNT] = {};
 uint32_t lastDiagButtonPollMs = 0;
