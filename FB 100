@@ -1,0 +1,433 @@
+FUNCTION_BLOCK FB 100
+TITLE = 'TGIS510 DB56 flag mirror - STEP 7 Classic STL'
+VERSION : 1.0
+
+VAR_INPUT
+    TEST_MODE : BOOL;
+    ESP_WIRE_0 : BOOL;
+    ESP_WIRE_1 : BOOL;
+    ESP_WIRE_2 : BOOL;
+    PLC_FLAGS : ARRAY[0..7] OF BOOL;
+END_VAR
+VAR_OUTPUT
+    PLC_WIRE_0 : BOOL;
+    PLC_WIRE_1 : BOOL;
+    PLC_WIRE_2 : BOOL;
+    ESP_FLAGS : ARRAY[0..7] OF BOOL;
+END_VAR
+VAR
+    TxCommitted : ARRAY[0..7] OF BOOL;
+    TxIndex : INT;
+    TxGrayHigh : BOOL;
+    TxGrayLow1 : BOOL;
+    TxGrayLow0 : BOOL;
+    TxValue : BOOL;
+    TxFound : BOOL;
+    TxPhase : INT;
+    TxParity : BOOL;
+    FrameTimer : SFB4;
+    FrameTimerQ : BOOL;
+    FrameTimerET : TIME;
+
+    RxInitialized : BOOL;
+    RxLastParity : BOOL;
+    RxExpectingFrameB : BOOL;
+    RxGrayHigh : BOOL;
+    RxGrayLow1 : BOOL;
+    RxGrayLow0 : BOOL;
+    RxIndexBit2 : BOOL;
+    RxIndexBit1 : BOOL;
+    RxIndexBit0 : BOOL;
+END_VAR
+
+BEGIN
+NETWORK
+TITLE = 'Reset protocol while test mode is inactive'
+      A     #TEST_MODE
+      JC    TACT
+      L     0
+      T     #TxPhase
+      CLR
+      =     #TxParity
+      =     #PLC_WIRE_0
+      =     #PLC_WIRE_1
+      =     #PLC_WIRE_2
+      =     #RxInitialized
+      =     #RxExpectingFrameB
+      A     #PLC_FLAGS[0]
+      NOT
+      =     #TxCommitted[0]
+      A     #PLC_FLAGS[1]
+      NOT
+      =     #TxCommitted[1]
+      A     #PLC_FLAGS[2]
+      NOT
+      =     #TxCommitted[2]
+      A     #PLC_FLAGS[3]
+      NOT
+      =     #TxCommitted[3]
+      A     #PLC_FLAGS[4]
+      NOT
+      =     #TxCommitted[4]
+      A     #PLC_FLAGS[5]
+      NOT
+      =     #TxCommitted[5]
+      A     #PLC_FLAGS[6]
+      NOT
+      =     #TxCommitted[6]
+      A     #PLC_FLAGS[7]
+      NOT
+      =     #TxCommitted[7]
+      CALL  #FrameTimer (
+            IN                       := FALSE,
+            PT                       := T#50MS,
+            Q                        := #FrameTimerQ,
+            ET                       := #FrameTimerET);
+      JU    ECYC
+
+TACT: NOP 0
+
+NETWORK
+TITLE = 'Start Frame A for the first changed PLC flag'
+      L     #TxPhase
+      L     0
+      ==I
+      JCN   TCPH
+      CLR
+      =     #TxFound
+      CALL  #FrameTimer (
+            IN                       := FALSE,
+            PT                       := T#50MS,
+            Q                        := #FrameTimerQ,
+            ET                       := #FrameTimerET);
+
+      A     #PLC_FLAGS[0]
+      X     #TxCommitted[0]
+      JC    TS00
+      A     #PLC_FLAGS[1]
+      X     #TxCommitted[1]
+      JC    TS01
+      A     #PLC_FLAGS[2]
+      X     #TxCommitted[2]
+      JC    TS02
+      A     #PLC_FLAGS[3]
+      X     #TxCommitted[3]
+      JC    TS03
+      A     #PLC_FLAGS[4]
+      X     #TxCommitted[4]
+      JC    TS04
+      A     #PLC_FLAGS[5]
+      X     #TxCommitted[5]
+      JC    TS05
+      A     #PLC_FLAGS[6]
+      X     #TxCommitted[6]
+      JC    TS06
+      A     #PLC_FLAGS[7]
+      X     #TxCommitted[7]
+      JC    TS07
+      JU    RXPR
+
+TS00: A #PLC_FLAGS[0]
+      =     #TxValue
+      L     0
+      T     #TxIndex
+      CLR
+      =     #TxGrayHigh
+      =     #TxGrayLow1
+      =     #TxGrayLow0
+      JU    TFA
+TS01: A #PLC_FLAGS[1]
+      =     #TxValue
+      L     1
+      T     #TxIndex
+      SET
+      =     #TxGrayHigh
+      CLR
+      =     #TxGrayLow1
+      =     #TxGrayLow0
+      JU    TFA
+TS02: A #PLC_FLAGS[2]
+      =     #TxValue
+      L     2
+      T     #TxIndex
+      SET
+      =     #TxGrayHigh
+      =     #TxGrayLow1
+      CLR
+      =     #TxGrayLow0
+      JU    TFA
+TS03: A #PLC_FLAGS[3]
+      =     #TxValue
+      L     3
+      T     #TxIndex
+      CLR
+      =     #TxGrayHigh
+      SET
+      =     #TxGrayLow1
+      CLR
+      =     #TxGrayLow0
+      JU    TFA
+TS04: A #PLC_FLAGS[4]
+      =     #TxValue
+      L     4
+      T     #TxIndex
+      CLR
+      =     #TxGrayHigh
+      SET
+      =     #TxGrayLow1
+      =     #TxGrayLow0
+      JU    TFA
+TS05: A #PLC_FLAGS[5]
+      =     #TxValue
+      L     5
+      T     #TxIndex
+      SET
+      =     #TxGrayHigh
+      =     #TxGrayLow1
+      =     #TxGrayLow0
+      JU    TFA
+TS06: A #PLC_FLAGS[6]
+      =     #TxValue
+      L     6
+      T     #TxIndex
+      SET
+      =     #TxGrayHigh
+      CLR
+      =     #TxGrayLow1
+      SET
+      =     #TxGrayLow0
+      JU    TFA
+TS07: A #PLC_FLAGS[7]
+      =     #TxValue
+      L     7
+      T     #TxIndex
+      CLR
+      =     #TxGrayHigh
+      =     #TxGrayLow1
+      SET
+      =     #TxGrayLow0
+
+TFA: NOP 0
+      A     #TxGrayLow0
+      =     #PLC_WIRE_0
+      A     #TxGrayLow1
+      =     #PLC_WIRE_1
+      A     #TxParity
+      NOT
+      =     #TxParity
+      A     #TxParity
+      =     #PLC_WIRE_2
+      L     1
+      T     #TxPhase
+      JU    RXPR
+
+NETWORK
+TITLE = 'Advance Frame A to Frame B after the wire dwell'
+TCPH: NOP 0
+      L     #TxPhase
+      L     1
+      ==I
+      JC    TWA
+      L     #TxPhase
+      L     2
+      ==I
+      JC    TWB
+      JU    RXPR
+
+TWA: NOP 0
+      CALL  #FrameTimer (
+            IN                       := TRUE,
+            PT                       := T#50MS,
+            Q                        := #FrameTimerQ,
+            ET                       := #FrameTimerET);
+      A     #FrameTimerQ
+      JCN   RXPR
+      CALL  #FrameTimer (
+            IN                       := FALSE,
+            PT                       := T#50MS,
+            Q                        := #FrameTimerQ,
+            ET                       := #FrameTimerET);
+      A     #TxGrayHigh
+      =     #PLC_WIRE_0
+      A     #TxValue
+      =     #PLC_WIRE_1
+      A     #TxParity
+      NOT
+      =     #TxParity
+      A     #TxParity
+      =     #PLC_WIRE_2
+      L     2
+      T     #TxPhase
+      JU    RXPR
+
+NETWORK
+TITLE = 'Commit Frame B after the wire dwell'
+TWB: NOP 0
+      CALL  #FrameTimer (
+            IN                       := TRUE,
+            PT                       := T#50MS,
+            Q                        := #FrameTimerQ,
+            ET                       := #FrameTimerET);
+      A     #FrameTimerQ
+      JCN   RXPR
+      CALL  #FrameTimer (
+            IN                       := FALSE,
+            PT                       := T#50MS,
+            Q                        := #FrameTimerQ,
+            ET                        := #FrameTimerET);
+      L     #TxIndex
+      L     0
+      ==I
+      JC    TC00
+      L     #TxIndex
+      L     1
+      ==I
+      JC    TC01
+      L     #TxIndex
+      L     2
+      ==I
+      JC    TC02
+      L     #TxIndex
+      L     3
+      ==I
+      JC    TC03
+      L     #TxIndex
+      L     4
+      ==I
+      JC    TC04
+      L     #TxIndex
+      L     5
+      ==I
+      JC    TC05
+      L     #TxIndex
+      L     6
+      ==I
+      JC    TC06
+      L     #TxIndex
+      L     7
+      ==I
+      JC    TC07
+      JU    TCDN
+TC00: A #TxValue
+      =     #TxCommitted[0]
+      JU    TCDN
+TC01: A #TxValue
+      =     #TxCommitted[1]
+      JU    TCDN
+TC02: A #TxValue
+      =     #TxCommitted[2]
+      JU    TCDN
+TC03: A #TxValue
+      =     #TxCommitted[3]
+      JU    TCDN
+TC04: A #TxValue
+      =     #TxCommitted[4]
+      JU    TCDN
+TC05: A #TxValue
+      =     #TxCommitted[5]
+      JU    TCDN
+TC06: A #TxValue
+      =     #TxCommitted[6]
+      JU    TCDN
+TC07: A #TxValue
+      =     #TxCommitted[7]
+TCDN: L 0
+      T     #TxPhase
+
+NETWORK
+TITLE = 'Receive Frame A/B using the parity edge as the strobe'
+RXPR: NOP 0
+      A     #RxInitialized
+      JC    RXCS
+      CLR
+      =     #RxLastParity
+      SET
+      =     #RxInitialized
+      CLR
+      =     #RxExpectingFrameB
+
+RXCS: NOP 0
+      A     #ESP_WIRE_2
+      X     #RxLastParity
+      JCN   RXDN
+      A     #ESP_WIRE_2
+      =     #RxLastParity
+      A     #RxExpectingFrameB
+      JC    RXFB
+      A     #ESP_WIRE_0
+      =     #RxGrayLow0
+      A     #ESP_WIRE_1
+      =     #RxGrayLow1
+      SET
+      =     #RxExpectingFrameB
+      JU    RXDN
+
+RXFB: NOP 0
+      A     #ESP_WIRE_0
+      =     #RxGrayHigh
+      A     #RxGrayHigh
+      =     #RxIndexBit2
+      A     #RxIndexBit2
+      X     #RxGrayLow1
+      =     #RxIndexBit1
+      A     #RxIndexBit1
+      X     #RxGrayLow0
+      =     #RxIndexBit0
+      A     #RxGrayHigh
+      AN    #RxGrayLow1
+      AN    #RxGrayLow0
+      JC    RS01
+      A     #RxGrayHigh
+      AN    #RxGrayLow1
+      A     #RxGrayLow0
+      JC    RS06
+      A     #RxGrayHigh
+      A     #RxGrayLow1
+      AN    #RxGrayLow0
+      JC    RS02
+      A     #RxGrayHigh
+      A     #RxGrayLow1
+      A     #RxGrayLow0
+      JC    RS05
+      AN    #RxGrayHigh
+      AN    #RxGrayLow1
+      AN    #RxGrayLow0
+      JC    RS00
+      AN    #RxGrayHigh
+      AN    #RxGrayLow1
+      A     #RxGrayLow0
+      JC    RS07
+      AN    #RxGrayHigh
+      A     #RxGrayLow1
+      AN    #RxGrayLow0
+      JC    RS03
+      JU    RS04
+RS00: A #ESP_WIRE_1
+      =     #ESP_FLAGS[0]
+      JU    RXFD
+RS01: A #ESP_WIRE_1
+      =     #ESP_FLAGS[1]
+      JU    RXFD
+RS02: A #ESP_WIRE_1
+      =     #ESP_FLAGS[2]
+      JU    RXFD
+RS03: A #ESP_WIRE_1
+      =     #ESP_FLAGS[3]
+      JU    RXFD
+RS04: A #ESP_WIRE_1
+      =     #ESP_FLAGS[4]
+      JU    RXFD
+RS05: A #ESP_WIRE_1
+      =     #ESP_FLAGS[5]
+      JU    RXFD
+RS06: A #ESP_WIRE_1
+      =     #ESP_FLAGS[6]
+      JU    RXFD
+RS07: A #ESP_WIRE_1
+      =     #ESP_FLAGS[7]
+RXFD: CLR
+      =     #RxExpectingFrameB
+RXDN: NOP 0
+ECYC: NOP 0
+      BE
+END_FUNCTION_BLOCK
