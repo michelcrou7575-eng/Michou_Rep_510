@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_01_11.cpp`, i.e. V5.01.11 -- see "V5.00.00" below for how we
+`tgis510_v5_01_12.cpp`, i.e. V5.01.12 -- see "V5.00.00" below for how we
 got here from the V4.15.x line). Read this file before making changes so
 standing rules and recent context carry over across sessions.
 
@@ -45,6 +45,23 @@ standing rules and recent context carry over across sessions.
   genuinely blocked on a decision only the user can make (e.g. a
   functional spec, a hardware wiring choice, an explicit rule override).
 
+- **V5.01.12** -- Answers the "remove Toggle on 1-A buttons" question from
+  V5.01.09/.10: the user clarified they want the numbered IO block
+  (`'1'`-`'A'`, IO1-7/OPTO_1-3) to be **momentary** -- `kDiagLampAutoReset[5..14]`
+  flipped from `false` to `true`, so each one's `$B(555-564)` lamp now
+  flashes ~1s to confirm the press then auto-resets (`activateDiagLamp()`),
+  same as the 17 one-shot diag buttons, instead of toggling and staying
+  latched to mirror the output. Lamp-only change -- `toggleMcpOutput()`/
+  `PlcComms::toggleTestBit()`/`flagRelayTx.setFlag()` (while Test Function
+  is ON) are untouched, so the real LED/OPTO pin/flag still toggles and
+  holds exactly as before; only the on-screen confirmation is momentary
+  now. Explicitly kept toggled (latched, `kDiagLampAutoReset=false`),
+  per the user's own list: `$B65`/`$B565` (KEYENCE_TRIG, a persistent
+  bench-test-pulse mode since V5.01.01) and `$B77`/`$B577`
+  (MLX_LIVE_TOGGLE, a persistent streaming mode) -- both already were,
+  no change needed, just confirmed unaffected. `$B79`/`$B579` (Test
+  Function, V5.01.09) isn't part of this array at all (standalone, its
+  own `testFuncLampState`) -- also confirmed unaffected, stays toggled.
 - **V5.01.11** -- V5.01.08 was wrong to assume `OPTO_1` and `OPTO_2`
   share one polarity just because they're the same 24V/220ohm MCP-driven
   circuit type -- the user confirmed `OPTO_2` is inverted after that fix
