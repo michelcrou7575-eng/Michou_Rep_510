@@ -1,0 +1,65 @@
+DATA_BLOCK DB 160
+TITLE =DB160
+VERSION : 0.0
+
+"COMMS RX"
+BEGIN
+   TEST_MODE := FALSE; 
+   ESP_WIRE_0 := FALSE; 
+   ESP_WIRE_1 := FALSE; 
+   ESP_WIRE_2 := FALSE; 
+   PLC_FLAGS[0] := FALSE; 
+   PLC_FLAGS[1] := FALSE; 
+   PLC_FLAGS[2] := FALSE; 
+   PLC_FLAGS[3] := FALSE; 
+   PLC_FLAGS[4] := FALSE; 
+   PLC_FLAGS[5] := FALSE; 
+   PLC_FLAGS[6] := FALSE; 
+   PLC_FLAGS[7] := FALSE; 
+   PLC_WIRE_0 := FALSE; 
+   PLC_WIRE_1 := FALSE; 
+   PLC_WIRE_2 := FALSE; 
+   ESP_FLAGS[0] := FALSE; 
+   ESP_FLAGS[1] := FALSE; 
+   ESP_FLAGS[2] := FALSE; 
+   ESP_FLAGS[3] := FALSE; 
+   ESP_FLAGS[4] := FALSE; 
+   ESP_FLAGS[5] := FALSE; 
+   ESP_FLAGS[6] := FALSE; 
+   ESP_FLAGS[7] := FALSE; 
+   TxCommitted[0] := FALSE; 
+   TxCommitted[1] := FALSE; 
+   TxCommitted[2] := FALSE; 
+   TxCommitted[3] := FALSE; 
+   TxCommitted[4] := FALSE; 
+   TxCommitted[5] := FALSE; 
+   TxCommitted[6] := FALSE; 
+   TxCommitted[7] := FALSE; 
+   TxIndex := 0; 
+   TxGrayHigh := FALSE; 
+   TxGrayLow1 := FALSE; 
+   TxGrayLow0 := FALSE; 
+   TxValue := FALSE; 
+   TxFound := FALSE; 
+   TxPhase := 0; 
+   TxParity := FALSE; 
+   FrameTimer.IN := FALSE; 
+   FrameTimer.PT := T#0MS; 
+   FrameTimer.Q := FALSE; 
+   FrameTimer.ET := T#0MS; 
+   FrameTimer.STATE := B#16#0; 
+   FrameTimer.STIME := T#0MS; 
+   FrameTimer.ATIME := T#0MS; 
+   FrameTimerQ := FALSE; 
+   FrameTimerET := T#0MS; 
+   RxInitialized := FALSE; 
+   RxLastParity := FALSE; 
+   RxExpectingFrameB := FALSE; 
+   RxGrayHigh := FALSE; 
+   RxGrayLow1 := FALSE; 
+   RxGrayLow0 := FALSE; 
+   RxIndexBit2 := FALSE; 
+   RxIndexBit1 := FALSE; 
+   RxIndexBit0 := FALSE; 
+END_DATA_BLOCK
+
