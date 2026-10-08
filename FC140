@@ -1,0 +1,21 @@
+FUNCTION "GREY_CODE_COMMS" : VOID
+TITLE = FC140
+VERSION : 0.1
+
+BEGIN
+NETWORK
+TITLE =Grey Code Call
+
+      CALL "GREYCODE" , "GREYCODE DB" (
+           TEST_MODE                := "COMMS_Test_Mode",
+           ESP_WIRE_0               := "INPUTS DB".Comms_Input_Bit_0,
+           ESP_WIRE_1               := "INPUTS DB".Comms_Input_Bit_1,
+           ESP_WIRE_2               := "INPUTS DB".Comms_Input_Bit_2,
+           PLC_FLAGS                := "DIGITAL COMMS DB".ESP_Send,
+           PLC_WIRE_0               := "OUTPUTS DB".FM350_DQ4_COMMS_BIT0,
+           PLC_WIRE_1               := "OUTPUTS DB".FM350_DQ5_COMMS_BIT1,
+           PLC_WIRE_2               := "OUTPUTS DB".FM350_DQ6_COMMS_BIT2,
+           ESP_FLAGS                := "DIGITAL COMMS DB".ESP_Receive);
+
+END_FUNCTION
+
