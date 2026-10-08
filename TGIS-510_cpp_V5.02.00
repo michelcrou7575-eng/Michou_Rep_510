@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.02.00
+// Ref: TGIS-510_cpp_V5.02.01
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2808,9 +2808,8 @@ bool runFlagRelaySelfTest()
   return true;
 }
 
-// Portable ESP-side flag transmitter. `wireState` is consumed by the
-// software loopback self-test now; physical pin mapping remains unbound
-// until the protocol is verified and the IO wiring is selected.
+// ESP-side flag transmitter. `wireState` drives OPTO_1/OPTO_2/OPTO_3 and is
+// also the source for the local receiver loopback during test mode.
 FlagRelayTx flagRelayTx;
 
 // Test Function mode (see NS12::BUTTON_TESTFUNC_ADDR) -- OFF: serial/HMI
@@ -2902,8 +2901,10 @@ PlcComms::PlcStatus plcLastCommandedStatus = PlcComms::PlcStatus::STOP;
 // commissioning the link. Enterable only from Standby/FaultStop (see the
 // '0' serial command), since it suspends the tube-inspection pipeline
 // (encoder/presence/position tracking, Keyence triggering, MLX90640
-// capture/processing, Word-Lamp matrix pacing). The protocol core is tested
-// in software; physical wire mapping is intentionally not bound here.
+// capture/processing, Word-Lamp matrix pacing). The test transmitter drives
+// the three TO_PLC_COMM outputs and loops its logical wire state directly
+// into FlagRelayRx; this verifies the ESP protocol without PLC feedback or
+// TX-to-RX jumpers.
 // Deliberately NOT suspended: esp_task_wdt
 // feed, the HMI header status bits ($B0/$B1/$B80 -- an operator watching
 // the HMI should still see the ESP as alive, not faulty, during a bench
@@ -2912,11 +2913,47 @@ bool digitalCommsTestMode = false;
 bool generalDiagnosticsEnabled = true;
 bool digitalCommsDisplayEnabled = false;
 FlagRelayRx flagRelayRx;
+bool flagRelayPhysicalStateInitialized = false;
+bool lastFlagRelayWireState[3] = {};
+
+void applyFlagRelayWireState()
+{
+  bool changed = !flagRelayPhysicalStateInitialized;
+
+  for (uint8_t wire = 0; wire < 3; wire++)
+  {
+    changed = changed || (lastFlagRelayWireState[wire] != flagRelayTx.wireState[wire]);
+  }
+
+  if (!changed)
+    return;
+
+  digitalWrite(Pins::ESP_OPTO_3, flagRelayTx.wireState[2]);
+
+  if (mcpOk)
+  {
+    mcp.digitalWrite(McpPin::OPTO_1, flagRelayTx.wireState[0]);
+    mcp.digitalWrite(McpPin::OPTO_2, !flagRelayTx.wireState[1]);
+  }
+
+  for (uint8_t wire = 0; wire < 3; wire++)
+  {
+    lastFlagRelayWireState[wire] = flagRelayTx.wireState[wire];
+  }
+  flagRelayPhysicalStateInitialized = true;
+}
 
 void serviceFlagRelayTransport(uint32_t now)
 {
   if (digitalCommsTestMode)
+  {
     flagRelayTx.service(now);
+    applyFlagRelayWireState();
+    // Local digital loopback: test the receiver against the exact logical
+    // three-bit frames sent by the transmitter, without reading PLC pins.
+    flagRelayRx.service(flagRelayTx.wireState[0], flagRelayTx.wireState[1],
+                        flagRelayTx.wireState[2]);
+  }
 }
 
 // HMI header status bits ($B0/$B1/$B2/$B80) -- see their NS12::*_ADDR comment.
@@ -3524,7 +3561,7 @@ void serviceHmiButtonPolling()
 // plcAcknowledge/plcMachineRunning/tubeIsBad or their log lines.
 void servicePlcControl()
 {
-  if (!mcpOk || !(state == SystemState::Standby || state == SystemState::TubeGap))
+  if (digitalCommsTestMode || !mcpOk || !(state == SystemState::Standby || state == SystemState::TubeGap))
     return;
   static bool ackPrevRaw = false, runningPrevRaw = false, tubeBadPrevRaw = false;
   bool ack = (mcp.digitalRead(McpPin::INPUT_1) == LOW); // INPUT_PULLUP: idle HIGH
@@ -3781,6 +3818,8 @@ void handleSerialCommand(char c)
       flagRelayTx.wireState[0] = false;
       flagRelayTx.wireState[1] = false;
       flagRelayTx.wireState[2] = false;
+      flagRelayPhysicalStateInitialized = false;
+      applyFlagRelayWireState();
       for (uint8_t i = 0; i < 8; i++)
       {
         flagRelayTx.committed[i] = !flagRelayTx.desired[i];
@@ -3788,7 +3827,7 @@ void handleSerialCommand(char c)
       }
       flagRelayRx.reset();
       Serial.println(F("[DIGITAL-COMMS-TEST] ON -- tube-inspection pipeline and PLC_STATUS auto-output "
-                        "suspended. Software transport only; PC keys '1'-'8' toggle ESP flags 0-7."));
+            "suspended. TX drives OPTO_1/2/3; PC keys '1'-'8' toggle ESP flags 0-7."));
     }
     else
     {
@@ -3798,6 +3837,7 @@ void handleSerialCommand(char c)
         flagRelayTx.pending[i] = flagRelayTx.desired[i] != flagRelayTx.committed[i];
       }
       PlcComms::setStatus(plcLastCommandedStatus);
+      flagRelayPhysicalStateInitialized = false;
       Serial.println(F("[DIGITAL-COMMS-TEST] OFF -- resuming normal operation."));
     }
     break;
