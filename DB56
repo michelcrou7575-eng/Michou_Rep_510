@@ -1,0 +1,30 @@
+DATA_BLOCK "DIGITAL COMMS DB"
+TITLE =DB56
+VERSION : 0.1
+
+
+  STRUCT 	
+   ESP_Send : ARRAY  [0 .. 7 ] OF //Send to ESP
+   BOOL  := FALSE;	
+   ESP_Receive : ARRAY  [0 .. 7 ] OF //Receive from ESP
+   BOOL  := FALSE;	
+  END_STRUCT ;	
+BEGIN
+   ESP_Send[0] := FALSE; 
+   ESP_Send[1] := FALSE; 
+   ESP_Send[2] := FALSE; 
+   ESP_Send[3] := FALSE; 
+   ESP_Send[4] := FALSE; 
+   ESP_Send[5] := FALSE; 
+   ESP_Send[6] := FALSE; 
+   ESP_Send[7] := FALSE; 
+   ESP_Receive[0] := FALSE; 
+   ESP_Receive[1] := FALSE; 
+   ESP_Receive[2] := FALSE; 
+   ESP_Receive[3] := FALSE; 
+   ESP_Receive[4] := FALSE; 
+   ESP_Receive[5] := FALSE; 
+   ESP_Receive[6] := FALSE; 
+   ESP_Receive[7] := FALSE; 
+END_DATA_BLOCK
+
