@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_02_04.cpp`, i.e. V5.02.04 -- see "V5.00.00" below for how we
+`tgis510_v5_02_05.cpp`, i.e. V5.02.05 -- see "V5.00.00" below for how we
 got here from the V4.15.x line, and "Branch consolidation (V5.02.01)"
 below for how this repo moved from `claude/cpp-file-sharing-t8h5g4` to
 `Main`). Read this file before making changes so standing rules and
@@ -51,6 +51,40 @@ historical only, kept for its commit history, not developed on further.
   genuinely blocked on a decision only the user can make (e.g. a
   functional spec, a hardware wiring choice, an explicit rule override).
 
+- **V5.02.05** -- Resolves V5.02.04's one open question, per the user's
+  own explicit design: **"`STOP/ALARM/WARNING/READY` could be the first
+  4 mirror inputs! And `ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad` could be
+  the 3 first mirror RX from PLC... AND All disconnected while TEST IS
+  ON!!!"**
+  - `PlcComms::setStatus()` now writes `STOP`/`ALARM`/`WARNING`/`READY`
+    as one-hot across `FlagRelayTx` flags 0-3 (bit `i` set iff
+    `status == i`) instead of the retired `GRAY3_ENCODE`/raw-pin path --
+    these are the PLC's first 4 mirror bits now. Needed a forward
+    declaration of `digitalCommsTestMode` (defined later in the file)
+    since `setStatus()` now checks it directly: disconnected whenever
+    `digitalCommsTestMode` is active, so bench-test toggles of those
+    same 4 flags aren't fought by this auto-output. `testOutputState[]`
+    bookkeeping is still updated alongside, unchanged.
+  - `servicePlcControl()` now reads `flagRelayRx.flags[0..2]` for
+    `ACKNOWLEDGE`/`MACHINE_RUNNING`/`tubeIsBad` instead of raw
+    `INPUT_1`/`INPUT_2`/`ESP_INPUT_3` levels -- these are the PLC's
+    first 3 *transmitted* mirror bits now, Gray-decoded through the
+    same `FlagRelayRx` link rather than read as 3 independent raw
+    levels. Its own `digitalCommsTestMode` gate is unchanged, so this
+    stays disconnected during bench test exactly like the TX side.
+  - With both production readers moved off the raw pins and onto
+    `flagRelayTx`/`flagRelayRx`, `serviceFlagRelayTransport()`'s RX half
+    no longer needs `digitalCommsTestMode` to arbitrate a conflict
+    either -- it's unconditional now too, same as the TX half since
+    V5.02.04. `flagRelayRx` always reflects whatever the PLC is
+    currently transmitting; `servicePlcControl()`'s own gate is what
+    decides whether to *act* on it.
+  - Net effect: `OPTO_1`/`OPTO_2`/`ESP_OPTO_3` and
+    `INPUT_1`/`INPUT_2`/`ESP_INPUT_3` now carry the Gray-coded
+    `FlagRelay` protocol exclusively and permanently in both directions
+    -- nothing reads or writes those 6 pins directly outside
+    `FlagRelayTx`/`Rx` anymore. Flags 4-7 each way are free for the user
+    to assign.
 - **V5.02.04** -- The user's explicit call, after V5.02.03's fixes made
   the real PLC link reliable: `FlagRelayTx`/`Rx` becomes the permanent,
   always-on comms link on `OPTO_1`/`OPTO_2`/`ESP_OPTO_3`, not a bench-
