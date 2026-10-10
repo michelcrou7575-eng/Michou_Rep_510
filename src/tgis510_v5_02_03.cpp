@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.02.02
+// Ref: TGIS-510_cpp_V5.02.03
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -47,10 +47,10 @@
 #include "driver/pcnt.h"
 
 #ifndef FW_VERSION_STRING
-#define FW_VERSION_STRING "V5.02.02"
+#define FW_VERSION_STRING "V5.02.03"
 #endif
 #ifndef FW_FILE_STRING
-#define FW_FILE_STRING "tgis510_V5.02.02.cpp"
+#define FW_FILE_STRING "tgis510_v5_02_03.cpp"
 #endif
 static const char *FW_VERSION = FW_VERSION_STRING;
 static const char *FW_FILE = FW_FILE_STRING;
@@ -2625,7 +2625,15 @@ struct Gray3Transceiver
 
 struct FlagRelayTx
 {
-  static constexpr uint32_t SETTLE_MS = 50;
+  // V5.02.03: was 50ms, exactly matching both FB160's own FrameTimer.PT
+  // (T#50MS) and OB35's 50ms cycle on the PLC side -- zero margin between
+  // transmit-hold-time and sample-period, with the ESP's millis() and the
+  // PLC's OB35 clock never phase-locked to each other. Bumped to 200ms
+  // (4x the PLC's 50ms sample rate) so OB35 reliably samples each frame
+  // several times no matter how the two clocks drift, confirmed as the
+  // real cause of "wrong flag value received" after the Gray-decode logic
+  // itself was traced and found correct (see CLAUDE.md V5.02.03 entry).
+  static constexpr uint32_t SETTLE_MS = 200;
 
   bool desired[8] = {};   // caller's target state, set via setFlag()
   bool committed[8] = {}; // last value this side has fully transmitted
@@ -2957,9 +2965,12 @@ void serviceFlagRelayTransport(uint32_t now)
     receivePollStarted = true;
     lastReceivePollMs = now;
 
-    bool wire0 = mcp.digitalRead(McpPin::INPUT_1) == HIGH;
-    bool wire1 = mcp.digitalRead(McpPin::INPUT_2) == HIGH;
-    bool wire2 = digitalRead(Pins::ESP_INPUT_3) == HIGH;
+    // INPUT_1/INPUT_2 are INPUT_PULLUP (idle HIGH, asserted LOW) -- same
+    // convention servicePlcControl() already uses on these same 2 pins for
+    // ACKNOWLEDGE/MACHINE_RUNNING. V5.02.02 read them as == HIGH, inverted.
+    bool wire0 = mcp.digitalRead(McpPin::INPUT_1) == LOW;
+    bool wire1 = mcp.digitalRead(McpPin::INPUT_2) == LOW;
+    bool wire2 = digitalRead(Pins::ESP_INPUT_3) == HIGH; // unchanged, different circuit (not pulled up)
     flagRelayRx.service(wire0, wire1, wire2);
   }
 }

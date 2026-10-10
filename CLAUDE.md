@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_02_01.cpp`, i.e. V5.02.01 -- see "V5.00.00" below for how we
+`tgis510_v5_02_03.cpp`, i.e. V5.02.03 -- see "V5.00.00" below for how we
 got here from the V4.15.x line, and "Branch consolidation (V5.02.01)"
 below for how this repo moved from `claude/cpp-file-sharing-t8h5g4` to
 `Main`). Read this file before making changes so standing rules and
@@ -51,6 +51,40 @@ historical only, kept for its commit history, not developed on further.
   genuinely blocked on a decision only the user can make (e.g. a
   functional spec, a hardware wiring choice, an explicit rule override).
 
+- **V5.02.03** -- Bench test on real hardware (ESP loopback alone: great;
+  real PLC wired in via `FC140`/`FB160`: erratic, "wrong flag value
+  received") traced to two separate, real bugs, neither of them in the
+  Gray-decode logic itself (that was fully traced by hand against
+  `Gray3::ENCODE`/`DECODE` and found correct on both the ESP C++ side and
+  `FB160`'s STL side -- its `RxIndexBit2/1/0` XOR-chain looked suspicious
+  at a glance but turned out to be dead/unused code; the real decode is
+  the `RS00`-`RS07` branch-tree right after it, verified bit-for-bit
+  against `{0,7,3,4,1,6,2,5}`):
+  1. `serviceFlagRelayTransport()`'s new real-pin RX read (added when the
+     V5.02.00 software loopback was disconnected, see that entry) read
+     `McpPin::INPUT_1`/`INPUT_2` as `== HIGH`. Those pins are
+     `INPUT_PULLUP` (idle HIGH, asserted LOW) -- the same 2 physical pins
+     `servicePlcControl()` already reads as `== LOW` for ACKNOWLEDGE/
+     MACHINE_RUNNING. Inverted; now reads `== LOW` to match.
+     `ESP_INPUT_3`/wire2 was already correct (different circuit, no
+     pull-up) and is unchanged.
+  2. `FlagRelayTx::SETTLE_MS` was 50ms -- exactly matching both `FB160`'s
+     own `FrameTimer.PT` (`T#50MS`) and, once the user tried calling
+     `FC140`/`FB160` from `OB35` instead of `OB1` to rule out scan-cycle
+     jitter, `OB35`'s own 50ms cycle too. Three clocks at the identical
+     period with zero margin, and the ESP's `millis()` and the PLC's
+     `OB35` timer are never phase-locked to each other -- whether a given
+     frame got sampled cleanly or mid-transition came down to how the two
+     clocks happened to drift against each other at that moment, which
+     matches "erratic, no pattern" exactly, and explains why moving to
+     `OB35` alone didn't fix it (fixing jitter doesn't help when the real
+     problem is zero margin). Bumped to 200ms (4x the PLC's 50ms sample
+     rate) so `OB35` reliably samples each frame several times regardless
+     of phase drift.
+  Whether `FB160` itself compiles clean on the user's actual S7 toolchain
+  (the `JC`/`JCN`/`JU`-to-labels concern from V5.02.00/.01) is still
+  unconfirmed -- these 2 fixes are ESP-side only and don't depend on that
+  answer, but it still matters for trusting `FB160`'s behavior overall.
 - **Branch consolidation (V5.02.01)** -- The user pushed independent
   hand-edits (same pattern as V5.00.00/V5.01.00/V5.01.01 before) to a
   brand-new `Main` branch rather than this repo's working branch at the
