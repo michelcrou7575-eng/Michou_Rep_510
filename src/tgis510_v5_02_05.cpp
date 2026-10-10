@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.02.03
+// Ref: TGIS-510_cpp_V5.02.05
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -2827,6 +2827,12 @@ FlagRelayTx flagRelayTx;
 // combined case block in handleSerialCommand().
 bool testFunctionMode = false;
 
+// Forward declaration -- defined further down (with digitalCommsDisplayEnabled
+// etc.), but PlcComms::setStatus() below needs it now that STOP/ALARM/
+// WARNING/READY writes FlagRelayTx flags 0-3 directly: it must stay out of
+// the way while those same 4 flags are being bench-tested manually.
+extern bool digitalCommsTestMode;
+
 namespace PlcComms
 {
   enum class PlcStatus : uint8_t
@@ -2849,6 +2855,12 @@ namespace PlcComms
   // matters and which real transitions were checked against it.
   constexpr uint8_t GRAY3_ENCODE[8] = {0, 4, 6, 2, 3, 7, 5, 1};
 
+  // V5.02.05: STOP/ALARM/WARNING/READY now transmitted as one-hot across
+  // FlagRelayTx flags 0-3 (bit i set iff status == i) -- the PLC's first 4
+  // mirror bits, per the user's explicit design (OPTO_1/OPTO_2/ESP_OPTO_3
+  // carry only the Gray-coded FlagRelay protocol now, nothing else).
+  // Disconnected while digitalCommsTestMode is active, so manual bench-test
+  // toggles of these same 4 flags aren't fought by this auto-output.
   void setStatus(PlcStatus s)
   {
     uint8_t pattern = GRAY3_ENCODE[static_cast<uint8_t>(s) & 0x07];
@@ -2856,40 +2868,24 @@ namespace PlcComms
     testOutputState[1] = (pattern >> 1) & 1;
     testOutputState[2] = (pattern >> 2) & 1;
 
-    digitalWrite(Pins::ESP_OPTO_3, testOutputState[2]);
-
-    if (!mcpOk)
+    if (digitalCommsTestMode)
       return;
-    // OPTO_1 and OPTO_2 are NOT the same polarity on real hardware (confirmed
-    // by the user, V5.01.11) despite being the same 24V/220ohm MCP-driven
-    // circuit type on paper -- OPTO_1 is active-high, OPTO_2 is active-low.
-    // V5.01.08 wrongly assumed "same circuit type" meant "same polarity" and
-    // stripped the inversion from both; this restores it for OPTO_2 only.
-    mcp.digitalWrite(McpPin::OPTO_1, testOutputState[0]);
-    mcp.digitalWrite(McpPin::OPTO_2, !testOutputState[1]);
+
+    uint8_t code = static_cast<uint8_t>(s) & 0x03;
+    for (uint8_t i = 0; i < 4; i++)
+    {
+      flagRelayTx.setFlag(i, i == code);
+    }
   }
 
+  // Bits 0-2 no longer drive OPTO_1/OPTO_2/ESP_OPTO_3 either, same reason as
+  // setStatus() above -- all 8 bits are array-only bookkeeping now. Real
+  // transmission goes through flagRelayTx.setFlag() instead.
   void setTestBit(uint8_t bit, bool value)
   {
     if (bit >= 8)
       return;
     testOutputState[bit] = value;
-
-    if (bit == 0)
-    {
-      if (mcpOk)
-        mcp.digitalWrite(McpPin::OPTO_1, testOutputState[bit]);
-    }
-    else if (bit == 1)
-    {
-      if (mcpOk)
-        mcp.digitalWrite(McpPin::OPTO_2, !testOutputState[bit]);
-    }
-    else if (bit == 2)
-    {
-      digitalWrite(Pins::ESP_OPTO_3, testOutputState[bit]);
-    }
-    // bits 3-7: Send_3-7, no physical pin yet -- array-only.
   }
 
   void toggleTestBit(uint8_t bit)
@@ -2952,27 +2948,35 @@ void applyFlagRelayWireState()
 
 void serviceFlagRelayTransport(uint32_t now)
 {
-  if (digitalCommsTestMode)
-  {
-    flagRelayTx.service(now);
-    applyFlagRelayWireState();
+  // V5.02.04: TX is now unconditional -- OPTO_1/OPTO_2/ESP_OPTO_3 are
+  // FlagRelayTx's exclusively (PLC_STATUS retired off them, see
+  // PlcComms::setStatus()), so there's no second writer to guard against
+  // anymore and this no longer needs digitalCommsTestMode to run.
+  flagRelayTx.service(now);
+  applyFlagRelayWireState();
 
-    static uint32_t lastReceivePollMs = 0;
-    static bool receivePollStarted = false;
-    if (!mcpOk || (receivePollStarted && now - lastReceivePollMs < MCP_POLL_INTERVAL_MS))
-      return;
+  // V5.02.05: RX is unconditional now too -- servicePlcControl() no longer
+  // reads INPUT_1/INPUT_2/ESP_INPUT_3 directly (it reads flagRelayRx.flags[]
+  // instead, see its own comment), so there's no second reader of these
+  // pins left to conflict with. flagRelayRx always reflects whatever the
+  // PLC is currently transmitting; servicePlcControl() is what still
+  // decides (via its own digitalCommsTestMode gate) whether to *act* on
+  // flags 0-2 as ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad.
+  static uint32_t lastReceivePollMs = 0;
+  static bool receivePollStarted = false;
+  if (!mcpOk || (receivePollStarted && now - lastReceivePollMs < MCP_POLL_INTERVAL_MS))
+    return;
 
-    receivePollStarted = true;
-    lastReceivePollMs = now;
+  receivePollStarted = true;
+  lastReceivePollMs = now;
 
-    // INPUT_1/INPUT_2 are INPUT_PULLUP (idle HIGH, asserted LOW) -- same
-    // convention servicePlcControl() already uses on these same 2 pins for
-    // ACKNOWLEDGE/MACHINE_RUNNING. V5.02.02 read them as == HIGH, inverted.
-    bool wire0 = mcp.digitalRead(McpPin::INPUT_1) == LOW;
-    bool wire1 = mcp.digitalRead(McpPin::INPUT_2) == LOW;
-    bool wire2 = digitalRead(Pins::ESP_INPUT_3) == HIGH; // unchanged, different circuit (not pulled up)
-    flagRelayRx.service(wire0, wire1, wire2);
-  }
+  // INPUT_1/INPUT_2 are INPUT_PULLUP (idle HIGH, asserted LOW) -- same
+  // convention servicePlcControl() already uses on these same 2 pins for
+  // ACKNOWLEDGE/MACHINE_RUNNING. V5.02.02 read them as == HIGH, inverted.
+  bool wire0 = mcp.digitalRead(McpPin::INPUT_1) == LOW;
+  bool wire1 = mcp.digitalRead(McpPin::INPUT_2) == LOW;
+  bool wire2 = digitalRead(Pins::ESP_INPUT_3) == HIGH; // unchanged, different circuit (not pulled up)
+  flagRelayRx.service(wire0, wire1, wire2);
 }
 
 // HMI header status bits ($B0/$B1/$B2/$B80) -- see their NS12::*_ADDR comment.
@@ -3578,16 +3582,21 @@ void serviceHmiButtonPolling()
 // switching atomically: a bit is only accepted once it reads the same on
 // two consecutive ~20ms polls, so a one-poll glitch never reaches
 // plcAcknowledge/plcMachineRunning/tubeIsBad or their log lines.
+// V5.02.05: ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad are now the PLC's first
+// 3 mirror bits (flagRelayRx.flags[0..2]), per the user's explicit design
+// -- INPUT_1/INPUT_2/ESP_INPUT_3 are flagRelayRx's exclusive input now,
+// decoded through the Gray-coded FlagRelay protocol rather than read as 3
+// independent raw levels. Still gated by digitalCommsTestMode (disconnected
+// while bench-testing those same 3 flags manually) and the Standby/TubeGap
+// state gate, unchanged.
 void servicePlcControl()
 {
   if (digitalCommsTestMode || !mcpOk || !(state == SystemState::Standby || state == SystemState::TubeGap))
     return;
   static bool ackPrevRaw = false, runningPrevRaw = false, tubeBadPrevRaw = false;
-  bool ack = (mcp.digitalRead(McpPin::INPUT_1) == LOW); // INPUT_PULLUP: idle HIGH
-  bool running = (mcp.digitalRead(McpPin::INPUT_2) == LOW);
-  // HIGH = bad/fail -- this file's assumed polarity for the PLC's relayed
-  // Keyence result, not yet confirmed against the S7 program.
-  bool tubeBad = (digitalRead(Pins::ESP_INPUT_3) == HIGH);
+  bool ack = flagRelayRx.flags[0];
+  bool running = flagRelayRx.flags[1];
+  bool tubeBad = flagRelayRx.flags[2];
 
   if (ack == ackPrevRaw && ack != plcAcknowledge)
   {
@@ -3845,8 +3854,9 @@ void handleSerialCommand(char c)
         flagRelayTx.pending[i] = true;
       }
       flagRelayRx.reset();
-      Serial.println(F("[DIGITAL-COMMS-TEST] ON -- tube-inspection pipeline and PLC_STATUS auto-output "
-            "suspended. TX drives OPTO_1/2/3; PC keys '1'-'8' toggle ESP flags 0-7."));
+      Serial.println(F("[DIGITAL-COMMS-TEST] ON -- tube-inspection pipeline suspended; RX from "
+            "INPUT_1/INPUT_2/ESP_INPUT_3 now also live. TX on OPTO_1/2/3 runs unconditionally "
+            "regardless of this mode. PC keys '1'-'8' toggle ESP flags 0-7."));
     }
     else
     {
@@ -3855,9 +3865,8 @@ void handleSerialCommand(char c)
       {
         flagRelayTx.pending[i] = flagRelayTx.desired[i] != flagRelayTx.committed[i];
       }
-      PlcComms::setStatus(plcLastCommandedStatus);
-      flagRelayPhysicalStateInitialized = false;
-      Serial.println(F("[DIGITAL-COMMS-TEST] OFF -- resuming normal operation."));
+      Serial.println(F("[DIGITAL-COMMS-TEST] OFF -- resuming normal operation (RX suspended again; "
+            "TX unaffected)."));
     }
     break;
   // Not a diag-button command -- on-demand troubleshooting sweep of all 7
@@ -3909,12 +3918,16 @@ void handleSerialCommand(char c)
     }
     break;
   case 'P':
-  { // $B66 / lamp $B566
+  { // $B66 / lamp $B566 -- since V5.02.05, drives FlagRelayTx flags 0-3
+    // one-hot (see PlcComms::setStatus()) instead of OPTO_1/OPTO_2/
+    // ESP_OPTO_3 directly; no-ops while digitalCommsTestMode is active,
+    // same as the production auto-output.
     static const char *kStatusNames[4] = {"STOP", "ALARM", "WARNING", "READY"};
     uint8_t nextCode = (static_cast<uint8_t>(plcLastCommandedStatus) + 1) % 4;
     plcLastCommandedStatus = static_cast<PlcComms::PlcStatus>(nextCode);
     PlcComms::setStatus(plcLastCommandedStatus);
-    Serial.printf("[PLC] PLC_STATUS -> %u (%s)\n", nextCode, kStatusNames[nextCode]);
+    Serial.printf("[PLC] PLC_STATUS -> %u (%s)%s\n", nextCode, kStatusNames[nextCode],
+                  digitalCommsTestMode ? " -- ignored, digitalCommsTestMode is active" : "");
     break;
   }
   case 'M': // $B67 / lamp $B567
@@ -4166,12 +4179,12 @@ void loop()
     }
   }
 
-  // PLC_STATUS output: STOP whenever FaultStop, READY otherwise. ALARM and
-  // WARNING have no trigger condition defined yet -- this project has no
-  // existing concept of a "warning, but not a fault" state to map onto
-  // them; use 'P' to drive them manually for bench/PLC-program testing
-  // until a real condition is decided. Suspended while digitalCommsTestMode
-  // is active so manual Send_0-7 bit commands have TO_PLC_COMM to themselves.
+  // PLC_STATUS output: STOP whenever FaultStop, READY otherwise -- since
+  // V5.02.05, sent as one-hot across FlagRelayTx flags 0-3 (see
+  // PlcComms::setStatus()), not driven onto OPTO_1/OPTO_2/ESP_OPTO_3
+  // directly. Suspended while digitalCommsTestMode is active so manual
+  // bench-test toggles of those same 4 flags aren't fought by this
+  // auto-output (setStatus() enforces that itself too, redundantly safe).
   if (!digitalCommsTestMode)
   {
     PlcComms::PlcStatus wantStatus =
