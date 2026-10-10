@@ -81,10 +81,12 @@ historical only, kept for its commit history, not developed on further.
      problem is zero margin). Bumped to 200ms (4x the PLC's 50ms sample
      rate) so `OB35` reliably samples each frame several times regardless
      of phase drift.
-  Whether `FB160` itself compiles clean on the user's actual S7 toolchain
-  (the `JC`/`JCN`/`JU`-to-labels concern from V5.02.00/.01) is still
-  unconfirmed -- these 2 fixes are ESP-side only and don't depend on that
-  answer, but it still matters for trusting `FB160`'s behavior overall.
+  **Resolved**: the user recompiled and re-sent `FB160` and confirmed it
+  compiles clean on their actual S7 toolchain -- the `JC`/`JCN`/`JU`-to-
+  labels concern from V5.02.00/.01 doesn't apply here (unlike the earlier
+  `LABEL does not compile` finding from this project's FB100/Gray-decode
+  work, which must have been specific to that context, e.g. an FC without
+  a VAR section, rather than labels/jumps being universally rejected).
 - **Branch consolidation (V5.02.01)** -- The user pushed independent
   hand-edits (same pattern as V5.00.00/V5.01.00/V5.01.01 before) to a
   brand-new `Main` branch rather than this repo's working branch at the
@@ -171,14 +173,13 @@ historical only, kept for its commit history, not developed on further.
     (instance `DB160`, symbolic name `"COMMS RX"`) -- the STL equivalent
     of `FlagRelayTx`/`FlagRelayRx` that was offered but never written
     earlier in this project's history, now Gray-coded on both sides to
-    match the ESP rework above. **Open concern, not yet verified**:
-    `FB160` uses `JC`/`JCN`/`JU` jumps to labels (`TACT`, `ECYC`, `TCPH`,
-    `TS00`, ...) throughout -- this project already found once that
-    `LABEL` does not compile on the user's actual S7 toolchain and
-    deliberately moved to a structured, flag-gated style instead (see
-    the FB100/Gray-decode work); this file may hit the same wall and
-    should be test-compiled before being trusted. Also unverified from
-    the file alone: `FC140`'s call references the instance DB as
+    match the ESP rework above. `FB160` uses `JC`/`JCN`/`JU` jumps to
+    labels (`TACT`, `ECYC`, `TCPH`, `TS00`, ...) throughout -- confirmed
+    compiling clean on the user's actual S7 toolchain (see V5.02.03
+    below), so the earlier "LABEL does not compile" finding from this
+    project's FB100/Gray-decode work doesn't generalize to this file.
+    Also unverified from the file alone: `FC140`'s call references the
+    instance DB as
     `"GREYCODE DB"`, but `DB160`'s own symbolic name here is
     `"COMMS RX"` -- that binding lives in the project's own Symbol
     Table, not in these files.
