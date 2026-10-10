@@ -2,7 +2,7 @@
 
 Home-lab / after-hours project. ESP32-S3 firmware for the Thermal Glue
 Inspection System lives in `src/tgis510_vX_YY_ZZ.cpp` (currently
-`tgis510_v5_02_03.cpp`, i.e. V5.02.03 -- see "V5.00.00" below for how we
+`tgis510_v5_02_04.cpp`, i.e. V5.02.04 -- see "V5.00.00" below for how we
 got here from the V4.15.x line, and "Branch consolidation (V5.02.01)"
 below for how this repo moved from `claude/cpp-file-sharing-t8h5g4` to
 `Main`). Read this file before making changes so standing rules and
@@ -51,6 +51,30 @@ historical only, kept for its commit history, not developed on further.
   genuinely blocked on a decision only the user can make (e.g. a
   functional spec, a hardware wiring choice, an explicit rule override).
 
+- **V5.02.04** -- The user's explicit call, after V5.02.03's fixes made
+  the real PLC link reliable: `FlagRelayTx`/`Rx` becomes the permanent,
+  always-on comms link on `OPTO_1`/`OPTO_2`/`ESP_OPTO_3`, not a bench-
+  test-only feature anymore -- **"`STOP/ALARM/WARNING/READY` will no
+  longer use these outputs... I will choose what will go to each of the
+  8 comms bits."** `PlcComms::setStatus()`/`setTestBit()` no longer touch
+  any physical pin -- they only update `testOutputState[]` for
+  bookkeeping (the `'P'`/$B66 diag button and the production
+  `FaultStop`-> `STOP`/`READY` auto-output in `loop()` both still run,
+  now inert on the wire). `serviceFlagRelayTransport()` splits in two:
+  the TX half (`flagRelayTx.service()`/`applyFlagRelayWireState()`) now
+  runs unconditionally every `loop()`, since `OPTO_1`/`OPTO_2`/
+  `ESP_OPTO_3` have exactly one writer now and no longer need
+  `digitalCommsTestMode` to arbitrate a conflict that no longer exists.
+  The RX half (reading `INPUT_1`/`INPUT_2`/`ESP_INPUT_3` into
+  `flagRelayRx`) is deliberately **NOT** made unconditional yet and
+  stays behind `digitalCommsTestMode` -- those same 3 pins are still
+  `servicePlcControl()`'s only source for `ACKNOWLEDGE`/
+  `MACHINE_RUNNING`/`tubeIsBad`, and `tubeIsBad` is live on the HMI
+  (`$B2`) today, not just a bench value like `PLC_STATUS` was. Flagged
+  to the user as the same class of conflict, on the receive side this
+  time -- resolving it (most likely folding those 3 into
+  `flagRelayRx.flags[]` too, same treatment as `PLC_STATUS` above) is
+  still an open decision, not yet made.
 - **V5.02.03** -- Bench test on real hardware (ESP loopback alone: great;
   real PLC wired in via `FC140`/`FB160`: erratic, "wrong flag value
   received") traced to two separate, real bugs, neither of them in the
