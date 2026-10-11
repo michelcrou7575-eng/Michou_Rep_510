@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.02.05
+// Ref: TGIS-510_cpp_V5.02.06
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -449,6 +449,14 @@ static const uint8_t CAPTURE_SAMPLE_COUNT = 4;
 static const float MATRIX_RAW_DELTA_MIN = 0.0f;       // PLACEHOLDER, no physical grounding
 static const float MATRIX_RAW_DELTA_MAX = 150.0f;     // tuned against a real hand-heat bench test
 static const float CAPTURE_TRIGGER_RAW_DELTA = 40.0f; // tuned against a real hand-heat bench test
+
+// V5.02.06: TEMP_OK's minimum setpoint (sent to the PLC -- see PlcComms
+// section below). Per the user: a floor only, no ceiling -- the heater's
+// own controller already caps the high side, this just has to catch glue
+// that's too cold. PLACEHOLDER, same caveat as CAPTURE_TRIGGER_RAW_DELTA
+// above: defaulted equal to it for now, not a real bench/field minimum --
+// needs an actual measured value before this means anything in production.
+static const float MIN_GLUE_TEMP_RAW_DELTA = CAPTURE_TRIGGER_RAW_DELTA;
 
 // =====================================================================
 // Timing constraint (critical, unresolved):
@@ -2828,59 +2836,26 @@ FlagRelayTx flagRelayTx;
 bool testFunctionMode = false;
 
 // Forward declaration -- defined further down (with digitalCommsDisplayEnabled
-// etc.), but PlcComms::setStatus() below needs it now that STOP/ALARM/
-// WARNING/READY writes FlagRelayTx flags 0-3 directly: it must stay out of
-// the way while those same 4 flags are being bench-tested manually.
+// etc.), but the PlcComms section below needs it so its own auto-outputs
+// stay out of the way while those same flags are being bench-tested
+// manually.
 extern bool digitalCommsTestMode;
 
 namespace PlcComms
 {
-  enum class PlcStatus : uint8_t
-  {
-    STOP = 0,
-    ALARM = 1,
-    WARNING = 2,
-    READY = 3
-  };
-
   // Send_0-7, named to match the PLC-side DB56 "DIGITAL COMMS" layout.
   // Bits 0-2 drive the real TO_PLC_COMM pins (OPTO_1/OPTO_2/ESP_OPTO_3);
   // 3-7 have no physical pin (confirmed: staying at 3 wires each side) --
   // tracked/logged only, ready for if more hardware is ever added.
+  // V5.02.06: STOP/ALARM/WARNING/READY/setStatus() (which used to drive
+  // flags 0-3 here) are retired -- the user's own call: the ESP's FaultStop
+  // state no longer needs to reach the PLC at all now that the PLC owns
+  // overall machine status itself (see the new RUN/ALARM/WARNING/READY/
+  // IV2_ALARM receive side below). This array/setTestBit()/toggleTestBit()
+  // remain only as the generic bench-test bookkeeping the '8'/'9'/'A' and
+  // Test Function serial paths already used independently of setStatus().
   bool testOutputState[8] = {};
 
-  // Gray-ring position (0-7) -> physical pattern (bit0=OPTO_1, bit1=OPTO_2,
-  // bit2=ESP_OPTO_3). Consecutive entries, and entry 7 -> entry 0, differ
-  // in exactly one bit -- see the TO_PLC_COMM comment above for why that
-  // matters and which real transitions were checked against it.
-  constexpr uint8_t GRAY3_ENCODE[8] = {0, 4, 6, 2, 3, 7, 5, 1};
-
-  // V5.02.05: STOP/ALARM/WARNING/READY now transmitted as one-hot across
-  // FlagRelayTx flags 0-3 (bit i set iff status == i) -- the PLC's first 4
-  // mirror bits, per the user's explicit design (OPTO_1/OPTO_2/ESP_OPTO_3
-  // carry only the Gray-coded FlagRelay protocol now, nothing else).
-  // Disconnected while digitalCommsTestMode is active, so manual bench-test
-  // toggles of these same 4 flags aren't fought by this auto-output.
-  void setStatus(PlcStatus s)
-  {
-    uint8_t pattern = GRAY3_ENCODE[static_cast<uint8_t>(s) & 0x07];
-    testOutputState[0] = (pattern >> 0) & 1;
-    testOutputState[1] = (pattern >> 1) & 1;
-    testOutputState[2] = (pattern >> 2) & 1;
-
-    if (digitalCommsTestMode)
-      return;
-
-    uint8_t code = static_cast<uint8_t>(s) & 0x03;
-    for (uint8_t i = 0; i < 4; i++)
-    {
-      flagRelayTx.setFlag(i, i == code);
-    }
-  }
-
-  // Bits 0-2 no longer drive OPTO_1/OPTO_2/ESP_OPTO_3 either, same reason as
-  // setStatus() above -- all 8 bits are array-only bookkeeping now. Real
-  // transmission goes through flagRelayTx.setFlag() instead.
   void setTestBit(uint8_t bit, bool value)
   {
     if (bit >= 8)
@@ -2895,10 +2870,25 @@ namespace PlcComms
   }
 } // namespace PlcComms
 
-bool plcAcknowledge = false;
-bool plcMachineRunning = false;
-bool tubeIsBad = false; // FROM_PLC_COMM bit 2 -- Keyence pass/fail, relayed by the PLC; mirrored to $B2
-PlcComms::PlcStatus plcLastCommandedStatus = PlcComms::PlcStatus::STOP;
+// V5.02.06: the PLC's first 5 mirror bits (flagRelayRx.flags[0..4]), per
+// the user's own re-mapping -- PLC now owns and transmits its own overall
+// status, ESP just displays it. Retired plcAcknowledge/plcMachineRunning:
+// ACKNOWLEDGE is now ESP-owned and sent TO the PLC instead (see
+// serviceEspToPlcFlags() below), and MACHINE_RUNNING is superseded by RUN.
+bool plcRun = false;
+bool plcAlarm = false;
+bool plcWarning = false;
+bool plcReady = false;
+bool plcIv2Alarm = false;
+
+// OPEN ITEM, not yet resolved: this used to be FROM_PLC_COMM bit 2 (Keyence
+// pass/fail relayed by the PLC) -- that bit index is WARNING now under the
+// V5.02.06 remap above, so nothing drives this from the link anymore. Left
+// in place (still clearable via the $B38 FAIL button, still mirrored to
+// $B2) but frozen at its last value otherwise -- flag to the user whether
+// this should be retired, or fed from something in the new ALARM/WARNING
+// scheme instead.
+bool tubeIsBad = false;
 
 // Bench-only digital comms test mode, matching the PLC-side DB56
 // "DIGITAL COMMS" Send_0-7/Receive_0-7 layout for 1:1 comparison while
@@ -3170,10 +3160,11 @@ void printDiagnostics()
 #else
     Serial.println(F("NS12 RM polling    : disabled (PT doesn't respond -- see NS12 namespace comment)"));
 #endif
-    Serial.printf("PLC_STATUS (commanded) : %u (0=STOP/1=ALARM/2=WARNING/3=READY)\n",
-                  (unsigned)plcLastCommandedStatus);
-    Serial.printf("PLC_CONTROL ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad : %d / %d / %d\n", plcAcknowledge,
-                  plcMachineRunning, tubeIsBad);
+    Serial.printf("PLC RUN/ALARM/WARNING/READY/IV2_ALARM : %d / %d / %d / %d / %d\n", plcRun, plcAlarm,
+                  plcWarning, plcReady, plcIv2Alarm);
+    Serial.printf("ESP->PLC ACKNOWLEDGE/STRIPS_OK/TEMP_OK : %d / %d / %d\n", ackButtonState,
+                  flagRelayTx.desired[1], flagRelayTx.desired[2]);
+    Serial.printf("tubeIsBad (orphaned, see V5.02.06 note) : %d\n", tubeIsBad);
   }
   if (digitalCommsDisplayEnabled)
   {
@@ -3571,54 +3562,95 @@ void serviceHmiButtonPolling()
 }
 
 // =====================================================================
-// PlcComms input side -- reads the S7-315-2's 2 control flags
-// (ACKNOWLEDGE/MACHINE_RUNNING) off the MCP23017. Folded into the same
-// Standby/TubeGap-only, ~20ms-cadence MCP poll window loop() already uses
-// (see that block's own comment) rather than a separate timer, since an
-// extra independent I2C poll interval would just double the I2C traffic
-// for no benefit.
+// PlcComms input side -- the PLC's own RUN/ALARM/WARNING/READY/IV2_ALARM
+// status, decoded off flagRelayRx (OPTO_1/OPTO_2/ESP_OPTO_3's Gray-coded
+// FlagRelay link). Folded into the same Standby/TubeGap-only, ~20ms-cadence
+// MCP poll window loop() already uses (see that block's own comment)
+// rather than a separate timer, since an extra independent I2C poll
+// interval would just double the I2C traffic for no benefit.
 // =====================================================================
 // Debounced against relay chatter/line noise and the PLC's own outputs not
 // switching atomically: a bit is only accepted once it reads the same on
 // two consecutive ~20ms polls, so a one-poll glitch never reaches
-// plcAcknowledge/plcMachineRunning/tubeIsBad or their log lines.
-// V5.02.05: ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad are now the PLC's first
-// 3 mirror bits (flagRelayRx.flags[0..2]), per the user's explicit design
-// -- INPUT_1/INPUT_2/ESP_INPUT_3 are flagRelayRx's exclusive input now,
-// decoded through the Gray-coded FlagRelay protocol rather than read as 3
-// independent raw levels. Still gated by digitalCommsTestMode (disconnected
-// while bench-testing those same 3 flags manually) and the Standby/TubeGap
+// plcRun/plcAlarm/plcWarning/plcReady/plcIv2Alarm or their log lines.
+// V5.02.06: the PLC's first 5 mirror bits (flagRelayRx.flags[0..4]), per
+// the user's own re-mapping -- the PLC now owns and transmits its overall
+// machine status itself; this is pure display on the ESP side, nothing
+// here is acted on. Still gated by digitalCommsTestMode (disconnected
+// while bench-testing those same 5 flags manually) and the Standby/TubeGap
 // state gate, unchanged.
 void servicePlcControl()
 {
   if (digitalCommsTestMode || !mcpOk || !(state == SystemState::Standby || state == SystemState::TubeGap))
     return;
-  static bool ackPrevRaw = false, runningPrevRaw = false, tubeBadPrevRaw = false;
-  bool ack = flagRelayRx.flags[0];
-  bool running = flagRelayRx.flags[1];
-  bool tubeBad = flagRelayRx.flags[2];
+  static bool runPrevRaw = false, alarmPrevRaw = false, warningPrevRaw = false, readyPrevRaw = false,
+              iv2PrevRaw = false;
+  bool run = flagRelayRx.flags[0];
+  bool alarm = flagRelayRx.flags[1];
+  bool warning = flagRelayRx.flags[2];
+  bool ready = flagRelayRx.flags[3];
+  bool iv2 = flagRelayRx.flags[4];
 
-  if (ack == ackPrevRaw && ack != plcAcknowledge)
+  if (run == runPrevRaw && run != plcRun)
   {
-    plcAcknowledge = ack;
-    Serial.printf("[PLC] ACKNOWLEDGE -> %s\n", ack ? "ACTIVE" : "idle");
+    plcRun = run;
+    Serial.printf("[PLC] RUN -> %s\n", run ? "ACTIVE" : "idle");
   }
-  ackPrevRaw = ack;
+  runPrevRaw = run;
 
-  if (running == runningPrevRaw && running != plcMachineRunning)
+  if (alarm == alarmPrevRaw && alarm != plcAlarm)
   {
-    plcMachineRunning = running;
-    Serial.printf("[PLC] MACHINE_RUNNING -> %s\n", running ? "ACTIVE" : "idle");
+    plcAlarm = alarm;
+    Serial.printf("[PLC] ALARM -> %s\n", alarm ? "ACTIVE" : "idle");
   }
-  runningPrevRaw = running;
+  alarmPrevRaw = alarm;
 
-  if (tubeBad == tubeBadPrevRaw && tubeBad != tubeIsBad)
+  if (warning == warningPrevRaw && warning != plcWarning)
   {
-    tubeIsBad = tubeBad;
-    Serial.printf("[PLC] Keyence result (via PLC) -> %s\n", tubeBad ? "FAIL" : "PASS");
-    ns12.sendWB(NS12::TUBE_BAD_ADDR, &tubeIsBad, 1);
+    plcWarning = warning;
+    Serial.printf("[PLC] WARNING -> %s\n", warning ? "ACTIVE" : "idle");
   }
-  tubeBadPrevRaw = tubeBad;
+  warningPrevRaw = warning;
+
+  if (ready == readyPrevRaw && ready != plcReady)
+  {
+    plcReady = ready;
+    Serial.printf("[PLC] READY -> %s\n", ready ? "ACTIVE" : "idle");
+  }
+  readyPrevRaw = ready;
+
+  if (iv2 == iv2PrevRaw && iv2 != plcIv2Alarm)
+  {
+    plcIv2Alarm = iv2;
+    Serial.printf("[PLC] IV2_ALARM -> %s\n", iv2 ? "ACTIVE" : "idle");
+  }
+  iv2PrevRaw = iv2;
+}
+
+// PlcComms output side -- ESP's 3 individual facts, sent TO the PLC on
+// flagRelayTx flags 0-2: ACKNOWLEDGE (the HMI's own $B39 button, relayed
+// as-is), STRIPS_OK (both glue strips show the expected presence signature)
+// and TEMP_OK (both strips at or above MIN_GLUE_TEMP_RAW_DELTA -- a floor
+// only, no ceiling, since the heater's own controller owns the high side).
+// V5.02.06, per the user's explicit design: "ESP gives individual data,
+// PLC manages it" -- the ESP no longer pre-judges an overall tube-bad
+// verdict, it just reports raw facts and lets the PLC combine them with
+// whatever else it knows (Keyence, IV2_ALARM, etc.). Disconnected while
+// digitalCommsTestMode is active, same reasoning as every other auto-
+// output onto these flags.
+void serviceEspToPlcFlags()
+{
+  if (digitalCommsTestMode)
+    return;
+
+  const GlueStripResult &strip1 = capture.strip1();
+  const GlueStripResult &strip2 = capture.strip2();
+  bool stripsOk = strip1.present && strip2.present;
+  bool tempOk = strip1.maxTempC >= MIN_GLUE_TEMP_RAW_DELTA && strip2.maxTempC >= MIN_GLUE_TEMP_RAW_DELTA;
+
+  flagRelayTx.setFlag(0, ackButtonState);
+  flagRelayTx.setFlag(1, stripsOk);
+  flagRelayTx.setFlag(2, tempOk);
 }
 
 //
@@ -3861,12 +3893,23 @@ void handleSerialCommand(char c)
     else
     {
       flagRelayTx.phase = FlagRelayTx::Phase::Idle;
+
+      // V5.02.06, per the user's explicit request: reset every bench-test
+      // bit on exit, both the real link (flagRelayTx.desired[], all 8 --
+      // flags 0-2 get reasserted with real values on the very next
+      // serviceEspToPlcFlags() call this same loop() pass, same as always;
+      // flags 3-7 have no production writer at all, so without this they'd
+      // otherwise stay stuck at whatever was last poked in bench test) and
+      // the array-only bookkeeping (PlcComms::testOutputState[], used by
+      // the '8'/'9'/'A' commands -- no physical effect since V5.02.04, but
+      // left stale here would be a misleading diagnostics read).
       for (uint8_t i = 0; i < 8; i++)
       {
-        flagRelayTx.pending[i] = flagRelayTx.desired[i] != flagRelayTx.committed[i];
+        flagRelayTx.setFlag(i, false);
+        PlcComms::testOutputState[i] = false;
       }
-      Serial.println(F("[DIGITAL-COMMS-TEST] OFF -- resuming normal operation (RX suspended again; "
-            "TX unaffected)."));
+      Serial.println(F("[DIGITAL-COMMS-TEST] OFF -- resuming normal operation (RX stays live, unchanged "
+            "since V5.02.05; TX unaffected; all 8 bench-test bits reset)."));
     }
     break;
   // Not a diag-button command -- on-demand troubleshooting sweep of all 7
@@ -3917,19 +3960,12 @@ void handleSerialCommand(char c)
       Serial.println(F("[IO-TEST] Keyence periodic trigger OFF."));
     }
     break;
-  case 'P':
-  { // $B66 / lamp $B566 -- since V5.02.05, drives FlagRelayTx flags 0-3
-    // one-hot (see PlcComms::setStatus()) instead of OPTO_1/OPTO_2/
-    // ESP_OPTO_3 directly; no-ops while digitalCommsTestMode is active,
-    // same as the production auto-output.
-    static const char *kStatusNames[4] = {"STOP", "ALARM", "WARNING", "READY"};
-    uint8_t nextCode = (static_cast<uint8_t>(plcLastCommandedStatus) + 1) % 4;
-    plcLastCommandedStatus = static_cast<PlcComms::PlcStatus>(nextCode);
-    PlcComms::setStatus(plcLastCommandedStatus);
-    Serial.printf("[PLC] PLC_STATUS -> %u (%s)%s\n", nextCode, kStatusNames[nextCode],
-                  digitalCommsTestMode ? " -- ignored, digitalCommsTestMode is active" : "");
+  case 'P': // $B66 / lamp $B566 -- retired V5.02.06: ESP no longer transmits a
+            // PLC_STATUS at all (the PLC owns RUN/ALARM/WARNING/READY now,
+            // see servicePlcControl() above). Lamp still flashes to confirm
+            // the press, same as every other retired one-shot diag button.
+    Serial.println(F("[PLC] 'P' retired -- PLC_STATUS no longer exists on the ESP side."));
     break;
-  }
   case 'M': // $B67 / lamp $B567
     pushTestPattern();
     break;
@@ -4179,23 +4215,12 @@ void loop()
     }
   }
 
-  // PLC_STATUS output: STOP whenever FaultStop, READY otherwise -- since
-  // V5.02.05, sent as one-hot across FlagRelayTx flags 0-3 (see
-  // PlcComms::setStatus()), not driven onto OPTO_1/OPTO_2/ESP_OPTO_3
-  // directly. Suspended while digitalCommsTestMode is active so manual
-  // bench-test toggles of those same 4 flags aren't fought by this
-  // auto-output (setStatus() enforces that itself too, redundantly safe).
-  if (!digitalCommsTestMode)
-  {
-    PlcComms::PlcStatus wantStatus =
-        (state == SystemState::FaultStop) ? PlcComms::PlcStatus::STOP : PlcComms::PlcStatus::READY;
-
-    if (wantStatus != plcLastCommandedStatus)
-    {
-      plcLastCommandedStatus = wantStatus;
-      PlcComms::setStatus(wantStatus);
-    }
-  }
+  // V5.02.06: ESP's own FaultStop state no longer goes to the PLC (the
+  // user's call -- the PLC owns overall status now, see servicePlcControl()
+  // above). In its place: ACKNOWLEDGE/STRIPS_OK/TEMP_OK, the ESP's 3
+  // individual facts, auto-sent every loop() (serviceEspToPlcFlags()
+  // itself stays out of the way while digitalCommsTestMode is active).
+  serviceEspToPlcFlags();
 
   // HMI header status bits: $B0 blinks to prove loop() is alive, $B1
   // mirrors FaultStop, $B80 is a non-latching OR of every subsystem
