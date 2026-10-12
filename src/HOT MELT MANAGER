@@ -1,0 +1,30 @@
+FUNCTION "HOT MELT MANAGER" : VOID
+TITLE =Hot Melt Manager FC110
+VERSION : 0.1
+
+BEGIN
+NETWORK
+TITLE =Velocity from Encoder
+
+      A     "RUN DATA DB".Machine_Run; 
+      =     "DIGITAL COMMS DB".ESP_Send[0];      // RUN
+
+NETWORK
+TITLE =Error Process
+
+      A     "INPUTS DB".IV2_Alarm; 
+      ON    "DIGITAL COMMS DB".ESP_Receive[1];   // NOT STRIPS_OK
+      =     "DIGITAL COMMS DB".ESP_Send[1];      // ALARM = IV2_Alarm OR no-glue-at-all
+
+      AN    "DIGITAL COMMS DB".ESP_Receive[2];   // NOT TEMP_OK
+      =     "DIGITAL COMMS DB".ESP_Send[2];      // WARNING = glue present but too cold
+
+NETWORK
+TITLE =OverAll Health 
+
+      A     "DIGITAL COMMS DB".ESP_Send[1];      // ALARM
+      O     "DIGITAL COMMS DB".ESP_Send[2];      // WARNING
+      NOT   ; 
+      =     "DIGITAL COMMS DB".ESP_Send[3];      // READY = neither
+
+END_FUNCTION
