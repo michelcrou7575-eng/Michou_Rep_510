@@ -889,12 +889,13 @@ namespace NS12
   constexpr uint16_t LAMP_TESTFUNC_ADDR = 579;
 
   // Header status bits, confirmed from the Symbol Table -- outputs the ESP
-  // writes, not inputs. $B2 "this Tube is BAD" mirrors FROM_PLC_COMM bit 2
-  // (Pins::ESP_INPUT_3), which the PLC now drives with Keyence's pass/fail
-  // result -- see servicePlcControl()'s tubeIsBad handling.
+  // writes, not inputs. $B2 "this Tube is BAD" mirrors IV2_ALARM (V5.02.06;
+  // flagRelayRx.flags[4] -- Keyence's own bad-tube input on the PLC,
+  // "INPUTS DB".IV2_Alarm, mirrored to the ESP) -- see servicePlcControl()'s
+  // tubeIsBad handling.
   constexpr uint16_t POWER_STATUS_ADDR = 0;   // "ESP Loop() is running" -- blinks
   constexpr uint16_t ESP_FAULTY_ADDR = 1;     // mirrors state == FaultStop
-  constexpr uint16_t TUBE_BAD_ADDR = 2;       // mirrors FROM_PLC_COMM bit 2 (Keyence result via PLC)
+  constexpr uint16_t TUBE_BAD_ADDR = 2;       // mirrors IV2_ALARM (Keyence result via PLC)
   constexpr uint16_t OVERALL_ALARM_ADDR = 80; // OR of known subsystem failures, no latch
 
   constexpr uint32_t BUTTON_POLL_INTERVAL_MS = 2000;
@@ -2881,13 +2882,12 @@ bool plcWarning = false;
 bool plcReady = false;
 bool plcIv2Alarm = false;
 
-// OPEN ITEM, not yet resolved: this used to be FROM_PLC_COMM bit 2 (Keyence
-// pass/fail relayed by the PLC) -- that bit index is WARNING now under the
-// V5.02.06 remap above, so nothing drives this from the link anymore. Left
-// in place (still clearable via the $B38 FAIL button, still mirrored to
-// $B2) but frozen at its last value otherwise -- flag to the user whether
-// this should be retired, or fed from something in the new ALARM/WARNING
-// scheme instead.
+// Resolved (V5.02.06): this used to be FROM_PLC_COMM bit 2 (Keyence
+// pass/fail relayed by the PLC); that bit index is WARNING now, but the
+// user confirmed the real signal is IV2_ALARM (flagRelayRx.flags[4],
+// "INPUTS DB".IV2_Alarm on the PLC side -- Keyence's own bad-tube input,
+// mirrored to the ESP) -- see servicePlcControl()'s iv2 handling below,
+// which now re-drives this and its $B2 mirror on every IV2_ALARM change.
 bool tubeIsBad = false;
 
 // Bench-only digital comms test mode, matching the PLC-side DB56
@@ -2951,7 +2951,7 @@ void serviceFlagRelayTransport(uint32_t now)
   // pins left to conflict with. flagRelayRx always reflects whatever the
   // PLC is currently transmitting; servicePlcControl() is what still
   // decides (via its own digitalCommsTestMode gate) whether to *act* on
-  // flags 0-2 as ACKNOWLEDGE/MACHINE_RUNNING/tubeIsBad.
+  // flags 0-4 as RUN/ALARM/WARNING/READY/IV2_ALARM (V5.02.06).
   static uint32_t lastReceivePollMs = 0;
   static bool receivePollStarted = false;
   if (!mcpOk || (receivePollStarted && now - lastReceivePollMs < MCP_POLL_INTERVAL_MS))
@@ -3164,7 +3164,7 @@ void printDiagnostics()
                   plcWarning, plcReady, plcIv2Alarm);
     Serial.printf("ESP->PLC ACKNOWLEDGE/STRIPS_OK/TEMP_OK : %d / %d / %d\n", ackButtonState,
                   flagRelayTx.desired[1], flagRelayTx.desired[2]);
-    Serial.printf("tubeIsBad (orphaned, see V5.02.06 note) : %d\n", tubeIsBad);
+    Serial.printf("tubeIsBad (from IV2_ALARM, see V5.02.06 note) : %d\n", tubeIsBad);
   }
   if (digitalCommsDisplayEnabled)
   {
@@ -3315,11 +3315,12 @@ void serviceAckLampAutoReset()
 
 // FAIL: narrower than Acknowledge -- only clears the bad-tube flag
 // (tubeIsBad/$B2), leaves FaultStop and the screen Enable toggles alone.
-// NOTE: tubeIsBad is re-driven from the PLC's own bit 2 level every
-// Standby/TubeGap poll (servicePlcControl()), not edge-triggered -- if
-// the PLC hasn't also dropped its signal, the very next poll will set
-// tubeIsBad back to true right after this clears it. Acking here is a
-// local display clear, not a guarantee the condition is gone.
+// NOTE: tubeIsBad is re-driven from the PLC's IV2_ALARM level (V5.02.06;
+// flagRelayRx.flags[4], debounced in servicePlcControl()), level-driven
+// not edge-triggered -- if the PLC hasn't also dropped IV2_ALARM, the
+// very next change will set tubeIsBad back to true right after this
+// clears it. Acking here is a local display clear, not a guarantee the
+// condition is gone.
 void applyFailButtonUpdate(bool pressed)
 {
   bool wasPressed = failButtonState;
@@ -3623,6 +3624,13 @@ void servicePlcControl()
   {
     plcIv2Alarm = iv2;
     Serial.printf("[PLC] IV2_ALARM -> %s\n", iv2 ? "ACTIVE" : "idle");
+
+    // V5.02.06 resolution of the tubeIsBad open item: IV2_ALARM *is*
+    // Keyence's bad-tube input, now mirrored to the ESP directly instead
+    // of through the old bit-2 slot (now WARNING) -- same real-world
+    // signal, same $B2 HMI mirror, new flag index.
+    tubeIsBad = iv2;
+    ns12.sendWB(NS12::TUBE_BAD_ADDR, &tubeIsBad, 1);
   }
   iv2PrevRaw = iv2;
 }
