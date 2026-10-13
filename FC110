@@ -1,0 +1,38 @@
+FUNCTION "HOT MELT MANAGER" : VOID
+TITLE =Hot Melt Manager FC110
+VERSION : 0.1
+
+BEGIN
+NETWORK
+TITLE =Velocity from Encoder
+
+      A     "COMMS_Test_Mode";
+      JC    SKP1;
+      A     "RUN DATA DB".Machine_Run;
+      =     "DIGITAL COMMS DB".ESP_Send[0]; // RUN
+SKP1: NOP   0;
+
+NETWORK
+TITLE =Error Process
+
+      A     "COMMS_Test_Mode";
+      JC    SKP2;
+      A     "INPUTS DB".IV2_Alarm;
+      ON    "DIGITAL COMMS DB".ESP_Receive[1]; // NOT STRIPS_OK
+      =     "DIGITAL COMMS DB".ESP_Send[1]; // ALARM
+
+      AN    "DIGITAL COMMS DB".ESP_Receive[2]; // NOT TEMP_OK
+      =     "DIGITAL COMMS DB".ESP_Send[2]; // WARNING
+SKP2: NOP   0;
+
+NETWORK
+TITLE =OverAll Health
+
+      A     "COMMS_Test_Mode";
+      JC    SKP3;
+      A     "DIGITAL COMMS DB".ESP_Send[1]; // ALARM
+      O     "DIGITAL COMMS DB".ESP_Send[2]; // WARNING
+      NOT   ;
+      =     "DIGITAL COMMS DB".ESP_Send[3]; // READY
+SKP3: NOP   0;
+END_FUNCTION

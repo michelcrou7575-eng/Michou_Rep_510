@@ -1,5 +1,5 @@
 // TGIS-510 -- Thermal Glue Inspection System
-// Ref: TGIS-510_cpp_V5.02.06
+// Ref: TGIS-510_cpp_V5.03.00
 //
 // Industrial QC system detecting hot-melt glue application on paper tubes moving
 // at high speed. Confirms glue presence, temperature (Celsius @ Lower Velocity), and quantity across
@@ -47,10 +47,10 @@
 #include "driver/pcnt.h"
 
 #ifndef FW_VERSION_STRING
-#define FW_VERSION_STRING "V5.02.03"
+#define FW_VERSION_STRING "V5.03.00"
 #endif
 #ifndef FW_FILE_STRING
-#define FW_FILE_STRING "tgis510_v5_02_03.cpp"
+#define FW_FILE_STRING "tgis510_v5_03_00.cpp"
 #endif
 static const char *FW_VERSION = FW_VERSION_STRING;
 static const char *FW_FILE = FW_FILE_STRING;
