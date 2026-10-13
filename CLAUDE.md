@@ -792,6 +792,13 @@ historical only, kept for its commit history, not developed on further.
   (V5.02.01)" above for how this repo arrived at `Main` as the working
   branch, and "V5.02.00/V5.02.01" for open concerns on `FB160` and
   `FC140`'s instance-DB binding specifically.
+- **STEP 7 Classic STL jump labels are capped at 4 characters** -- `TACT`/
+  `TCPH`/`TWA`/`TC00`-`TC07`/`RS00`-`RS07`/`RXPR`/`RXCS`/`RXFB`/`RXFD`/
+  `RXDN`/`ECYC`/`TFA`/`TCDN` in `FB160` are all already within that limit;
+  a longer label (caught once in this project's own history -- an
+  `"REMEMBER:"` label proposed for a new `FC140` network, which would not
+  have compiled) silently isn't valid STL, not a style preference. Keep
+  any new label added to these files at 4 characters or fewer.
 
 ## Reference diagnostics baseline
 
